@@ -25,6 +25,10 @@
     "dialog:allow-open",
     "dialog:allow-save",
     "dialog:allow-ask",
-    "dialog:allow-message"
+    "dialog:allow-message",
+    "sql:allow-execute",
+    "sql:allow-load",
+    "sql:allow-close",
+    "sql:allow-select"
   ]
 }

@@ -1,11 +1,10 @@
-import { readTextFile, writeTextFile, mkdir, exists, BaseDirectory } from '@tauri-apps/plugin-fs';
+import { writeTextFile } from '@tauri-apps/plugin-fs';
 import { open as dialogOpen, save as dialogSave, ask } from '@tauri-apps/plugin-dialog';
 import { openUrl } from '@tauri-apps/plugin-opener';
+import { initDb, loadAll, saveAll, migrateFromJSON, exportAllData, importAllData } from './db.js';
 
 // ===== STORAGE CONFIG =====
-const DATA_DIR = 'PsyGest';
-const DATA_FILE = 'PsyGest/data.json';
-const BASE = BaseDirectory.Document;
+let _db = null; // instance SQLite partagée
 
 const DEFAULT_SETTINGS = {
   prenom: '',
@@ -36,21 +35,20 @@ let _currentApercuId = null;
 
 async function loadState() {
   try {
-    const dirExists = await exists(DATA_DIR, { baseDir: BASE });
-    if (!dirExists) await mkdir(DATA_DIR, { baseDir: BASE, recursive: true });
-    const fileExists = await exists(DATA_FILE, { baseDir: BASE });
-    if (fileExists) {
-      const content = await readTextFile(DATA_FILE, { baseDir: BASE });
-      const loaded = JSON.parse(content);
-      state.patients = loaded.patients || [];
-      state.factures = loaded.factures || [];
-      state.seances = loaded.seances || [];
-      state.charges = loaded.charges || [];
-      state.nextFactureNum = loaded.nextFactureNum || 1;
-      state.settings = { ...DEFAULT_SETTINGS, ...(loaded.settings || {}) };
-      return true;
+    _db = await initDb();
+    const migrated = await migrateFromJSON(_db);
+    const loaded = await loadAll(_db);
+    state.patients = loaded.patients;
+    state.factures = loaded.factures;
+    state.seances = loaded.seances;
+    state.charges = loaded.charges;
+    state.nextFactureNum = loaded.nextFactureNum || 1;
+    state.settings = { ...DEFAULT_SETTINGS, ...loaded.settings };
+    if (migrated) {
+      // Affiche la notification après le premier rendu
+      setTimeout(() => toast('Migration effectuée — vos données ont été importées dans la nouvelle base de données ✓'), 800);
     }
-    return false;
+    return state.patients.length > 0 || state.factures.length > 0 || migrated;
   } catch (e) {
     console.error('loadState:', e);
     return false;
@@ -59,7 +57,7 @@ async function loadState() {
 
 async function saveState() {
   try {
-    await writeTextFile(DATA_FILE, JSON.stringify(state, null, 2), { baseDir: BASE });
+    await saveAll(_db, state);
   } catch (e) {
     console.error('saveState:', e);
     toast('Erreur lors de la sauvegarde.', 'error');
@@ -977,7 +975,8 @@ async function exportData() {
       filters: [{ name: 'Sauvegarde PsyGest', extensions: ['json'] }],
     });
     if (path) {
-      await writeTextFile(path, JSON.stringify(state, null, 2));
+      const data = await exportAllData(_db);
+      await writeTextFile(path, JSON.stringify(data, null, 2));
       toast('Sauvegarde exportée ✓');
     }
   } catch (e) {
@@ -997,19 +996,22 @@ async function importData() {
       filters: [{ name: 'Sauvegarde PsyGest', extensions: ['json'] }],
     });
     if (!path) return;
+    const { readTextFile } = await import('@tauri-apps/plugin-fs');
     const content = await readTextFile(path);
     const imported = JSON.parse(content);
-    if (!Array.isArray(imported.patients) || !Array.isArray(imported.factures)) {
+    // Accepte v1 (patients[]) et v2 (_version:2)
+    if (!imported._version && !Array.isArray(imported.patients)) {
       toast('Fichier invalide : structure incorrecte.', 'error');
       return;
     }
-    state.patients = imported.patients || [];
-    state.factures = imported.factures || [];
-    state.seances = imported.seances || [];
-    state.charges = imported.charges || [];
-    state.nextFactureNum = imported.nextFactureNum || 1;
-    state.settings = { ...DEFAULT_SETTINGS, ...(imported.settings || {}) };
-    await saveState();
+    await importAllData(_db, imported);
+    const loaded = await loadAll(_db);
+    state.patients = loaded.patients;
+    state.factures = loaded.factures;
+    state.seances = loaded.seances;
+    state.charges = loaded.charges;
+    state.nextFactureNum = loaded.nextFactureNum || 1;
+    state.settings = { ...DEFAULT_SETTINGS, ...loaded.settings };
     refreshSidebarCounts();
     navigate('dashboard');
     toast('Données importées ✓');
