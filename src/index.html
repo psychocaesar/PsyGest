@@ -151,6 +151,7 @@
       <div class="bar-track"><div class="bar-fill" id="urssaf-bar" style="width:0%"></div></div>
       <div class="bar-labels"><span id="urssaf-montant">0 € provisionnés</span><span id="urssaf-ca">sur 0 € CA</span></div>
     </div>
+    <div id="objectif-bar" style="display:none;"></div>
     <div class="section-header">
       <h2 class="section-title">Dernières factures</h2>
       <button class="btn btn-ghost btn-sm" onclick="navigate('factures')">Voir tout →</button>
@@ -316,17 +317,35 @@
 
   <!-- STATS -->
   <section class="page page-content" id="page-stats">
-    <h2 class="section-title" style="margin-bottom:var(--space-6);">Statistiques</h2>
-    <div class="kpi-grid">
-      <div class="kpi-card"><div class="kpi-label">CA total</div><div class="kpi-value" id="stats-ca">0 €</div></div>
-      <div class="kpi-card"><div class="kpi-label">Nb factures</div><div class="kpi-value" id="stats-nb">0</div></div>
-      <div class="kpi-card"><div class="kpi-label">Panier moyen</div><div class="kpi-value" id="stats-moy">0 €</div></div>
-      <div class="kpi-card"><div class="kpi-label">Taux recouvrement</div><div class="kpi-value kpi-trend-up" id="stats-taux">—</div></div>
+    <div class="stats-topbar">
+      <div style="display:flex;gap:var(--space-3);align-items:center;flex-wrap:wrap;flex:1;">
+        <select class="form-select" id="stats-period" onchange="onStatsPeriodChange()" style="max-width:200px;">
+          <option value="month">Mois en cours</option>
+          <option value="quarter">Trimestre en cours</option>
+          <option value="year" selected>Année en cours</option>
+          <option value="year-1">Année N-1</option>
+          <option value="custom">Personnalisée</option>
+        </select>
+        <div id="stats-custom-dates" style="display:none;gap:var(--space-2);align-items:center;">
+          <input class="form-input" type="date" id="stats-date-from" style="max-width:160px;" onchange="refreshStats()">
+          <span style="color:var(--color-text-muted);">→</span>
+          <input class="form-input" type="date" id="stats-date-to" style="max-width:160px;" onchange="refreshStats()">
+        </div>
+      </div>
+      <button class="btn btn-secondary btn-sm" onclick="export2035()">
+        <i data-lucide="file-down"></i> Déclaration fiscale 2035
+      </button>
     </div>
-    <div class="alert alert-success">
-      <i data-lucide="check-circle"></i>
-      <div>Toutes vos données sont stockées <strong>localement sur votre disque</strong> dans <code>~/Documents/PsyGest/data.json</code>, aucune donnée patient n'est envoyée sur un serveur — conformité RGPD assurée.</div>
+    <div class="tabs" id="stats-tabs" style="margin-bottom:var(--space-5);">
+      <button class="tab-btn active" onclick="switchStatsTab('overview')">Vue d'ensemble</button>
+      <button class="tab-btn" onclick="switchStatsTab('patients')">Patients</button>
+      <button class="tab-btn" onclick="switchStatsTab('financier')">Financier</button>
+      <button class="tab-btn" onclick="switchStatsTab('activite')">Activité clinique</button>
     </div>
+    <div id="stats-tab-overview" class="active"></div>
+    <div id="stats-tab-patients"></div>
+    <div id="stats-tab-financier"></div>
+    <div id="stats-tab-activite"></div>
   </section>
 
   <!-- RÉGLAGES -->
@@ -384,6 +403,11 @@
             <input class="form-input" id="set-duree" type="number" step="5" min="15" value="50">
           </div>
         </div>
+        <div class="form-group" style="margin-top:var(--space-4);">
+          <label for="set-objectif-ca">Objectif CA mensuel (€)</label>
+          <input class="form-input" id="set-objectif-ca" type="number" step="10" min="0" placeholder="ex. 2400">
+          <div class="form-hint">Utilisé pour la barre de progression sur le tableau de bord.</div>
+        </div>
 
         <div class="settings-section-title" style="margin-top:var(--space-6);">Sauvegarde &amp; Export</div>
         <div class="export-actions">
@@ -420,6 +444,20 @@
       </div>
       <div class="form-group"><label for="p-email">Email</label><input class="form-input" id="p-email" type="email" placeholder="patient@email.fr"></div>
       <div class="form-group"><label for="p-motif">Motif de consultation</label><textarea class="form-textarea" id="p-motif" placeholder="Description du motif…"></textarea></div>
+      <div class="form-group">
+        <label for="p-source">Comment nous avez-vous connu ?</label>
+        <select class="form-select" id="p-source">
+          <option value="">— Non renseigné —</option>
+          <option value="medecin">Médecin traitant</option>
+          <option value="psychiatre">Psychiatre</option>
+          <option value="confrere">Psychologue confrère</option>
+          <option value="bouche_a_oreille">Bouche à oreille</option>
+          <option value="site_internet">Site internet cesarbroche.fr</option>
+          <option value="mon_soutien_psy">Mon Soutien Psy</option>
+          <option value="employeur">Employeur</option>
+          <option value="autre">Autre</option>
+        </select>
+      </div>
       <div class="form-group">
         <label><input type="checkbox" id="p-rgpd" style="margin-right:8px;">Le patient a consenti au traitement de ses données personnelles (RGPD) *</label>
       </div>

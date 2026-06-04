@@ -143,6 +143,13 @@ async function applySchema(db) {
   for (const sql of tables) {
     await db.execute(sql);
   }
+  // Migrations — colonnes ajoutées après la création initiale
+  const migrations = [
+    'ALTER TABLE patients ADD COLUMN source_orientation TEXT',
+  ];
+  for (const sql of migrations) {
+    try { await db.execute(sql); } catch (_) {}
+  }
 }
 
 // ─── Chargement complet (→ state) ─────────────────────────────────────────────
@@ -176,6 +183,7 @@ export async function loadAll(db) {
   if (settings.tauxUrssaf) settings.tauxUrssaf = parseFloat(settings.tauxUrssaf);
   if (settings.tarifConsultation) settings.tarifConsultation = parseFloat(settings.tarifConsultation);
   if (settings.dureeConsultation) settings.dureeConsultation = parseInt(settings.dureeConsultation);
+  if (settings.objectifCA) settings.objectifCA = parseFloat(settings.objectifCA);
 
   // nextFactureNum
   const nextFactureNum = parseInt(settings._nextFactureNum || '1');
@@ -239,6 +247,7 @@ export async function loadAll(db) {
       dateCreation: row.date_creation,
       rgpd: row.rgpd === 1,
       cloture: row.cloture === 1,
+      sourceOrientation: row.source_orientation || '',
       notes,
       questionnaires,
       objectifs: { valeurs, objectifs: objectifsArr, engagements },
@@ -323,6 +332,7 @@ async function saveSettings(db, state) {
     ['tarifConsultation', String(s.tarifConsultation ?? 60)],
     ['dureeConsultation', String(s.dureeConsultation ?? 50)],
     ['calendlyUrl', s.calendlyUrl || ''],
+    ['objectifCA', String(s.objectifCA ?? 0)],
     ['_nextFactureNum', String(state.nextFactureNum ?? 1)],
   ];
   for (const [key, value] of pairs) {
@@ -339,13 +349,14 @@ async function savePatientsAll(db, patients) {
   for (const p of patients) {
     await db.execute(
       `INSERT INTO patients (id,nom,prenom,date_naissance,email,telephone,motif,
-         notes_generales,date_creation,actif,cloture,rgpd)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+         notes_generales,date_creation,actif,cloture,rgpd,source_orientation)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       [
         String(p.id), p.nom, p.prenom, p.naissance || null, p.email || null,
         p.tel || null, p.motif || null, null,
         p.dateCreation || new Date().toISOString(),
         1, p.cloture ? 1 : 0, p.rgpd ? 1 : 0,
+        p.sourceOrientation || null,
       ]
     );
 

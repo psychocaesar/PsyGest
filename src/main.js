@@ -18,6 +18,7 @@ const DEFAULT_SETTINGS = {
   tarifConsultation: 60,
   dureeConsultation: 50,
   calendlyUrl: '',
+  objectifCA: 0,
 };
 
 // ===== STATE =====
@@ -185,6 +186,7 @@ async function savePatient() {
     tel: document.getElementById('p-tel').value,
     email: document.getElementById('p-email').value,
     motif: document.getElementById('p-motif').value,
+    sourceOrientation: document.getElementById('p-source')?.value || '',
     dateCreation: new Date().toISOString(),
     rgpd: true,
   });
@@ -193,6 +195,8 @@ async function savePatient() {
   ['p-prenom', 'p-nom', 'p-naissance', 'p-tel', 'p-email', 'p-motif'].forEach(id => {
     document.getElementById(id).value = '';
   });
+  const srcEl = document.getElementById('p-source');
+  if (srcEl) srcEl.value = '';
   document.getElementById('p-rgpd').checked = false;
   toast(`Dossier de ${prenom} ${nom} créé ✓`);
   refreshSidebarCounts();
@@ -909,6 +913,26 @@ function refreshDashboard() {
   const pct = caTotal > 0 ? Math.min(100, Math.round(urssaf / caTotal * 100)) : 0;
   document.getElementById('urssaf-bar').style.width = pct + '%';
 
+  // Bloc objectif CA mensuel
+  const objectifCA = parseFloat(state.settings.objectifCA) || 0;
+  const objBar = document.getElementById('objectif-bar');
+  if (objBar) {
+    if (objectifCA > 0) {
+      const pctObj = Math.min(100, Math.round(caMonth / objectifCA * 100));
+      const colObj = pctObj < 50 ? 'var(--color-error)' : pctObj < 80 ? 'var(--color-warning)' : 'var(--color-success)';
+      const seancesRestantes = Math.max(0, Math.ceil((objectifCA - caMonth) / (state.settings.tarifConsultation || 60)));
+      objBar.style.display = '';
+      objBar.innerHTML = `<div class="charges-title" style="color:${colObj};">🎯 Objectif CA mensuel</div>
+        <div class="bar-track"><div class="bar-fill" style="width:${pctObj}%;background:${colObj};"></div></div>
+        <div class="bar-labels">
+          <span>${formatAmount(caMonth)} réalisés sur ${formatAmount(objectifCA)} visés (${pctObj}%)</span>
+          <span style="color:var(--color-text-muted);">${seancesRestantes > 0 ? seancesRestantes + ' séance(s) restante(s)' : '✓ Objectif atteint'}</span>
+        </div>`;
+    } else {
+      objBar.style.display = 'none';
+    }
+  }
+
   const last5 = state.factures.slice(-5).reverse();
   const tbody = document.getElementById('dashboard-factures-table');
   if (!last5.length) {
@@ -925,15 +949,659 @@ function refreshDashboard() {
 }
 
 // ===== STATS =====
-function refreshStats() {
-  const ca = state.factures.filter(f => f.statut === 'payee').reduce((s, f) => s + Number(f.montant), 0);
-  const nb = state.factures.length;
-  const payees = state.factures.filter(f => f.statut === 'payee').length;
-  document.getElementById('stats-ca').textContent = formatAmount(ca);
-  document.getElementById('stats-nb').textContent = nb;
-  document.getElementById('stats-moy').textContent = nb ? formatAmount(ca / (payees || 1)) : '0 €';
-  document.getElementById('stats-taux').textContent = nb ? Math.round(payees / nb * 100) + ' %' : '—';
+
+let _statsCurrentTab = 'overview';
+
+function getStatsPeriod() {
+  const period = document.getElementById('stats-period')?.value || 'year';
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = now.getMonth();
+  switch (period) {
+    case 'month': {
+      const from = `${y}-${String(m+1).padStart(2,'0')}-01`;
+      return { from, to: today() };
+    }
+    case 'quarter': {
+      const q = Math.floor(m / 3);
+      const fm = q * 3;
+      return { from: `${y}-${String(fm+1).padStart(2,'0')}-01`, to: today() };
+    }
+    case 'year':
+      return { from: `${y}-01-01`, to: today() };
+    case 'year-1':
+      return { from: `${y-1}-01-01`, to: `${y-1}-12-31` };
+    case 'custom':
+      return {
+        from: document.getElementById('stats-date-from')?.value || `${y}-01-01`,
+        to:   document.getElementById('stats-date-to')?.value   || today(),
+      };
+    default:
+      return { from: `${y}-01-01`, to: today() };
+  }
 }
+
+function onStatsPeriodChange() {
+  const isCustom = document.getElementById('stats-period')?.value === 'custom';
+  const cd = document.getElementById('stats-custom-dates');
+  if (cd) cd.style.display = isCustom ? 'flex' : 'none';
+  refreshStats();
+}
+window.onStatsPeriodChange = onStatsPeriodChange;
+
+function switchStatsTab(tab) {
+  _statsCurrentTab = tab;
+  const tabs = ['overview', 'patients', 'financier', 'activite'];
+  tabs.forEach(t => {
+    document.getElementById(`stats-tab-${t}`).classList.toggle('active', t === tab);
+  });
+  document.querySelectorAll('#stats-tabs .tab-btn').forEach((btn, i) => {
+    btn.classList.toggle('active', tabs[i] === tab);
+  });
+  const { from, to } = getStatsPeriod();
+  if (tab === 'overview')  renderStatsOverview(from, to);
+  if (tab === 'patients')  renderStatsPatients(from, to);
+  if (tab === 'financier') renderStatsFinancier(from, to);
+  if (tab === 'activite')  renderStatsActivite(from, to);
+}
+window.switchStatsTab = switchStatsTab;
+
+function refreshStats() {
+  const { from, to } = getStatsPeriod();
+  if (_statsCurrentTab === 'overview')  renderStatsOverview(from, to);
+  if (_statsCurrentTab === 'patients')  renderStatsPatients(from, to);
+  if (_statsCurrentTab === 'financier') renderStatsFinancier(from, to);
+  if (_statsCurrentTab === 'activite')  renderStatsActivite(from, to);
+}
+
+// ── SVG helpers ────────────────────────────────────────────
+
+function svgLineChart(data, { width=580, height=180, color='#5a6e5c', label='' } = {}) {
+  if (!data.length) return '<p style="color:var(--color-text-muted);text-align:center;padding:var(--space-6);">Aucune donnée</p>';
+  const max = Math.max(...data.map(d=>d.v), 1);
+  const PL=48, PR=16, PT=16, PB=36;
+  const W=width-PL-PR, H=height-PT-PB;
+  const xs = (i) => PL + (i/(data.length-1||1))*W;
+  const ys = (v) => PT + H - (v/max)*H;
+  const pts = data.map((d,i) => `${xs(i)},${ys(d.v)}`).join(' ');
+  const area = `${PL},${PT+H} ${pts} ${xs(data.length-1)},${PT+H}`;
+  const gridLines = [0,.25,.5,.75,1].map(f => {
+    const y = PT+H*(1-f), val = label==='€' ? formatAmount(max*f) : Math.round(max*f);
+    return `<line x1="${PL}" y1="${y}" x2="${PL+W}" y2="${y}" stroke="#e5e5e0" stroke-width="1"/>
+            <text x="${PL-4}" y="${y+4}" text-anchor="end" font-size="9" fill="#aaa">${val}</text>`;
+  }).join('');
+  const xLabels = data.map((d,i) => {
+    if (i % Math.ceil(data.length/8) !== 0) return '';
+    return `<text x="${xs(i)}" y="${PT+H+14}" text-anchor="middle" font-size="9" fill="#aaa">${d.l}</text>`;
+  }).join('');
+  return `<svg width="100%" viewBox="0 0 ${width} ${height}" style="display:block;overflow:visible;">
+    ${gridLines}
+    <polygon points="${area}" fill="${color}" opacity=".12"/>
+    <polyline points="${pts}" fill="none" stroke="${color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+    ${data.map((d,i)=>`<circle cx="${xs(i)}" cy="${ys(d.v)}" r="3" fill="${color}"><title>${d.l}: ${d.v}</title></circle>`).join('')}
+    ${xLabels}
+  </svg>`;
+}
+
+function svgBarChart(data, { width=580, height=180, color='#5a6e5c', label='' } = {}) {
+  if (!data.length) return '<p style="color:var(--color-text-muted);text-align:center;padding:var(--space-6);">Aucune donnée</p>';
+  const max = Math.max(...data.map(d=>d.v), 1);
+  const PL=48, PR=16, PT=16, PB=36;
+  const W=width-PL-PR, H=height-PT-PB;
+  const gap=W/data.length, bw=gap*.65;
+  const gridLines = [0,.25,.5,.75,1].map(f => {
+    const y = PT+H*(1-f), val = label==='€' ? formatAmount(max*f) : Math.round(max*f);
+    return `<line x1="${PL}" y1="${y}" x2="${PL+W}" y2="${y}" stroke="#e5e5e0" stroke-width="1"/>
+            <text x="${PL-4}" y="${y+4}" text-anchor="end" font-size="9" fill="#aaa">${val}</text>`;
+  }).join('');
+  const bars = data.map((d,i) => {
+    const x=PL+i*gap+(gap-bw)/2, bh=(d.v/max)*H, y=PT+H-bh;
+    return `<rect x="${x}" y="${y}" width="${bw}" height="${bh}" fill="${color}" rx="2"><title>${d.l}: ${d.v}</title></rect>
+            <text x="${x+bw/2}" y="${PT+H+14}" text-anchor="middle" font-size="9" fill="#aaa">${d.l}</text>`;
+  }).join('');
+  return `<svg width="100%" viewBox="0 0 ${width} ${height}" style="display:block;overflow:visible;">
+    ${gridLines}${bars}
+  </svg>`;
+}
+
+function svgPieChart(data) {
+  const nonEmpty = data.filter(d=>d.v>0);
+  if (!nonEmpty.length) return '<p style="color:var(--color-text-muted);text-align:center;padding:var(--space-6);">Aucune donnée</p>';
+  const total = nonEmpty.reduce((s,d)=>s+d.v,0);
+  const COLORS = ['#5a6e5c','#9e6030','#b88a1c','#427a32','#a0354a','#7c5cbf','#2a7ab5','#666'];
+  const cx=90, cy=90, r=75;
+  let angle = -Math.PI/2;
+  const paths = nonEmpty.map((d,i) => {
+    const a = (d.v/total)*2*Math.PI;
+    const x1=cx+r*Math.cos(angle), y1=cy+r*Math.sin(angle);
+    angle += a;
+    const x2=cx+r*Math.cos(angle), y2=cy+r*Math.sin(angle);
+    return `<path d="M${cx},${cy}L${x1},${y1}A${r},${r},0,${a>Math.PI?1:0},1,${x2},${y2}Z"
+      fill="${COLORS[i%COLORS.length]}" stroke="white" stroke-width="1.5">
+      <title>${d.l}: ${d.v} (${Math.round(d.v/total*100)}%)</title></path>`;
+  }).join('');
+  const legend = nonEmpty.map((d,i) => `<div style="display:flex;align-items:center;gap:6px;font-size:var(--text-xs);">
+    <span style="width:10px;height:10px;border-radius:50%;background:${COLORS[i%COLORS.length]};flex-shrink:0;display:inline-block;"></span>
+    <span>${d.l} — ${Math.round(d.v/total*100)}%</span>
+  </div>`).join('');
+  return `<div style="display:flex;gap:var(--space-5);align-items:center;flex-wrap:wrap;">
+    <svg viewBox="0 0 180 180" style="width:160px;height:160px;flex-shrink:0;">${paths}</svg>
+    <div style="display:flex;flex-direction:column;gap:var(--space-2);">${legend}</div>
+  </div>`;
+}
+
+function svgStackedBar(data, { width=580, height=200 } = {}) {
+  if (!data.length) return '<p style="color:var(--color-text-muted);text-align:center;padding:var(--space-6);">Aucune donnée</p>';
+  const maxCA = Math.max(...data.map(d=>d.ca), 1);
+  const PL=56, PR=16, PT=16, PB=36;
+  const W=width-PL-PR, H=height-PT-PB;
+  const gap=W/data.length, bw=gap*.65;
+  const C = { net:'#427a32', charges:'#9e6030', urssaf:'#b88a1c' };
+  const gridLines = [0,.25,.5,.75,1].map(f => {
+    const y=PT+H*(1-f);
+    return `<line x1="${PL}" y1="${y}" x2="${PL+W}" y2="${y}" stroke="#e5e5e0" stroke-width="1"/>
+            <text x="${PL-4}" y="${y+4}" text-anchor="end" font-size="9" fill="#aaa">${formatAmount(maxCA*f)}</text>`;
+  }).join('');
+  const bars = data.map((d,i) => {
+    const x=PL+i*gap+(gap-bw)/2, baseY=PT+H;
+    const uH=(d.urssaf/maxCA)*H, cH=(d.charges/maxCA)*H;
+    const net=Math.max(0,d.ca-d.charges-d.urssaf), nH=(net/maxCA)*H;
+    return `<rect x="${x}" y="${baseY-uH}" width="${bw}" height="${uH}" fill="${C.urssaf}"><title>URSSAF: ${formatAmount(d.urssaf)}</title></rect>
+            <rect x="${x}" y="${baseY-uH-cH}" width="${bw}" height="${cH}" fill="${C.charges}"><title>Charges: ${formatAmount(d.charges)}</title></rect>
+            <rect x="${x}" y="${baseY-uH-cH-nH}" width="${bw}" height="${nH}" fill="${C.net}" rx="2"><title>Net: ${formatAmount(net)}</title></rect>
+            <text x="${x+bw/2}" y="${PT+H+14}" text-anchor="middle" font-size="9" fill="#aaa">${d.l}</text>`;
+  }).join('');
+  const legend = `<g>
+    <rect x="${PL}" y="${height-10}" width="8" height="8" fill="${C.net}"/>
+    <text x="${PL+12}" y="${height-3}" font-size="9" fill="#666">Net</text>
+    <rect x="${PL+52}" y="${height-10}" width="8" height="8" fill="${C.charges}"/>
+    <text x="${PL+64}" y="${height-3}" font-size="9" fill="#666">Charges</text>
+    <rect x="${PL+128}" y="${height-10}" width="8" height="8" fill="${C.urssaf}"/>
+    <text x="${PL+140}" y="${height-3}" font-size="9" fill="#666">URSSAF estimé</text>
+  </g>`;
+  return `<svg width="100%" viewBox="0 0 ${width} ${height+14}" style="display:block;overflow:visible;">
+    ${gridLines}${bars}${legend}
+  </svg>`;
+}
+
+// ── Helpers période ──────────────────────────────────────
+
+function last12Months() {
+  const now = new Date();
+  return Array.from({length:12},(_,i)=>{
+    const d = new Date(now.getFullYear(), now.getMonth()-11+i, 1);
+    const y=d.getFullYear(), m=d.getMonth();
+    const lastDay = new Date(y,m+1,0).getDate();
+    return {
+      l: d.toLocaleDateString('fr-FR',{month:'short',year:'2-digit'}),
+      from: `${y}-${String(m+1).padStart(2,'0')}-01`,
+      to:   `${y}-${String(m+1).padStart(2,'0')}-${String(lastDay).padStart(2,'0')}`,
+    };
+  });
+}
+
+function inRange(date, from, to) { return date >= from && date <= to; }
+
+function kpiCard(label, value, sub='', trend='') {
+  return `<div class="kpi-card"><div class="kpi-label">${label}</div>
+    <div class="kpi-value${trend?' kpi-trend-'+trend:''}">${value}</div>
+    ${sub?`<div class="kpi-sub">${sub}</div>`:''}
+  </div>`;
+}
+
+function chartSection(title, content) {
+  return `<div class="stats-chart-section">
+    <div class="stats-chart-title">${title}</div>
+    <div class="stats-chart-body">${content}</div>
+  </div>`;
+}
+
+// ── Onglet 1 — Vue d'ensemble ────────────────────────────
+
+function renderStatsOverview(from, to) {
+  const el = document.getElementById('stats-tab-overview');
+  if (!el) return;
+  const taux = urssafRate();
+  const facPeriod = state.factures.filter(f => inRange(f.date, from, to));
+  const seancesPeriod = state.seances.filter(s => inRange(s.date, from, to));
+  const payees = facPeriod.filter(f => f.statut === 'payee');
+  const ca = payees.reduce((s,f)=>s+Number(f.montant),0);
+  const chargesPeriod = state.charges.filter(c=>inRange(c.date,from,to));
+  const totalCharges = chargesPeriod.reduce((s,c)=>s+Number(c.montant),0);
+  const urssaf = ca * taux;
+  const netRevenu = ca - totalCharges - urssaf;
+  const seancesRealisees = seancesPeriod.filter(s=>s.statut==='present').length;
+  const seancesPlanifiees = seancesPeriod.filter(s=>['planifie','confirme','present'].includes(s.statut)).length;
+  const tauxRemplissage = seancesPlanifiees > 0 ? Math.round(seancesRealisees/seancesPlanifiees*100) : 0;
+  const patActifs = new Set(seancesPeriod.filter(s=>s.patientId).map(s=>s.patientId)).size;
+  const panierMoyen = seancesRealisees > 0 ? ca/seancesRealisees : 0;
+
+  const months = last12Months();
+  const caByMonth = months.map(m => ({
+    l: m.l,
+    v: Math.round(state.factures.filter(f=>f.statut==='payee'&&inRange(f.date,m.from,m.to)).reduce((s,f)=>s+Number(f.montant),0)),
+  }));
+  const seancesByMonth = months.map(m => ({
+    l: m.l,
+    v: state.seances.filter(s=>s.statut==='present'&&inRange(s.date,m.from,m.to)).length,
+  }));
+
+  // Motifs de consultation (anamnèse)
+  const motifsRaw = state.patients.map(p => {
+    const a = p._anamnese;
+    return p.motif || (a?.motif_principal) || '';
+  }).filter(Boolean);
+  const motifsCount = {};
+  motifsRaw.forEach(m => { const k = m.slice(0,30); motifsCount[k] = (motifsCount[k]||0)+1; });
+  const motifData = Object.entries(motifsCount).sort((a,b)=>b[1]-a[1]).slice(0,6)
+    .map(([l,v])=>({l,v}));
+
+  el.innerHTML = `
+    <div class="kpi-grid kpi-grid-6">
+      ${kpiCard('CA de la période', formatAmount(ca), '', ca>0?'up':'')}
+      ${kpiCard('Séances réalisées', seancesRealisees)}
+      ${kpiCard('Patients actifs', patActifs)}
+      ${kpiCard('Taux de remplissage', tauxRemplissage+'%', seancesPlanifiees+' planifiées')}
+      ${kpiCard('Revenu net estimé', formatAmount(netRevenu), 'CA – charges – URSSAF', netRevenu>=0?'up':'warning')}
+      ${kpiCard('Panier moyen', formatAmount(panierMoyen), 'par séance réalisée')}
+    </div>
+    <div class="stats-charts-grid">
+      ${chartSection('CA mensuel — 12 mois glissants', svgLineChart(caByMonth,{color:'#5a6e5c',label:'€'}))}
+      ${chartSection('Séances réalisées par mois', svgBarChart(seancesByMonth,{color:'#427a32'}))}
+      ${chartSection('Répartition des motifs de consultation', svgPieChart(motifData))}
+    </div>`;
+}
+
+// ── Onglet 2 — Patients ──────────────────────────────────
+
+function renderStatsPatients(from, to) {
+  const el = document.getElementById('stats-tab-patients');
+  if (!el) return;
+  const seancesPeriod = state.seances.filter(s=>inRange(s.date,from,to));
+  const patientsActifIds = new Set(seancesPeriod.filter(s=>s.patientId).map(s=>s.patientId));
+  const nouveaux = state.patients.filter(p=>p.dateCreation&&p.dateCreation.slice(0,10)>=from&&p.dateCreation.slice(0,10)<=to).length;
+  const enCours = patientsActifIds.size;
+  const termines = state.patients.filter(p=>p.cloture).length;
+
+  const dureesArr = [];
+  for (const p of state.patients) {
+    const ps = state.seances.filter(s=>s.patientId===p.id).map(s=>s.date).sort();
+    if (ps.length >= 2) {
+      const diff = (new Date(ps[ps.length-1]+'T12:00')-new Date(ps[0]+'T12:00'))/(1000*60*60*24*7);
+      dureesArr.push(diff);
+    }
+  }
+  const dureeMoy = dureesArr.length ? Math.round(dureesArr.reduce((a,b)=>a+b,0)/dureesArr.length) : 0;
+
+  const patAvecSeances = state.patients.filter(p=>state.seances.some(s=>s.patientId===p.id));
+  const seancesMoy = patAvecSeances.length
+    ? Math.round(state.seances.filter(s=>s.patientId).length / patAvecSeances.length * 10)/10
+    : 0;
+
+  // Sources d'orientation
+  const sourceLabels = {
+    medecin:'Médecin traitant', psychiatre:'Psychiatre', confrere:'Confrère psychologue',
+    bouche_a_oreille:'Bouche à oreille', site_internet:'Site internet',
+    mon_soutien_psy:'Mon Soutien Psy', employeur:'Employeur', autre:'Autre',
+  };
+  const srcCount = {};
+  state.patients.forEach(p => {
+    if (p.sourceOrientation) {
+      const k = sourceLabels[p.sourceOrientation] || p.sourceOrientation;
+      srcCount[k] = (srcCount[k]||0)+1;
+    }
+  });
+  const srcData = Object.entries(srcCount).sort((a,b)=>b[1]-a[1]).map(([l,v])=>({l,v}));
+
+  const months = last12Months();
+  const patActifByMonth = months.map(m => {
+    const ids = new Set(state.seances.filter(s=>s.patientId&&inRange(s.date,m.from,m.to)).map(s=>s.patientId));
+    return { l: m.l, v: ids.size };
+  });
+
+  el.innerHTML = `
+    <div class="kpi-grid">
+      ${kpiCard('Nouveaux patients', nouveaux, 'sur la période')}
+      ${kpiCard('Patients actifs', enCours, 'au moins 1 séance')}
+      ${kpiCard('Dossiers clôturés', termines, 'total')}
+      ${kpiCard('Durée moy. de suivi', dureeMoy+' sem.', 'par patient')}
+      ${kpiCard('Séances moy./patient', seancesMoy, 'tous patients confondus')}
+    </div>
+    <div class="stats-charts-grid">
+      ${chartSection('Patients actifs par mois — 12 mois glissants', svgBarChart(patActifByMonth,{color:'#5a6e5c'}))}
+      ${chartSection("Sources d'orientation", srcData.length ? svgPieChart(srcData) : '<p style="color:var(--color-text-muted);padding:var(--space-4);">Renseignez le champ « Comment nous avez-vous connu ? » dans les fiches patients.</p>')}
+    </div>`;
+}
+
+// ── Onglet 3 — Financier ─────────────────────────────────
+
+function renderStatsFinancier(from, to) {
+  const el = document.getElementById('stats-tab-financier');
+  if (!el) return;
+  const taux = urssafRate();
+  const facPeriod = state.factures.filter(f=>inRange(f.date,from,to));
+  const payees = facPeriod.filter(f=>f.statut==='payee');
+  const ca = payees.reduce((s,f)=>s+Number(f.montant),0);
+  const chargesPeriod = state.charges.filter(c=>inRange(c.date,from,to));
+  const totalCharges = chargesPeriod.reduce((s,c)=>s+Number(c.montant),0);
+  const urssaf = ca * taux;
+  const net = ca - totalCharges - urssaf;
+  const impayeesAll = state.factures.filter(f=>f.statut==='en_attente');
+  const montantImpayees = impayeesAll.reduce((s,f)=>s+Number(f.montant),0);
+
+  const paiementsAvecDate = state.factures.filter(f=>f.statut==='payee'&&f.dateCreation);
+  const delaiMoy = paiementsAvecDate.length
+    ? Math.round(paiementsAvecDate.reduce((s,f)=>{
+        const diff=(new Date(f.date+'T12:00')-new Date(f.dateCreation.slice(0,10)+'T12:00'))/(1000*60*60*24);
+        return s+Math.max(0,diff);
+      },0)/paiementsAvecDate.length)
+    : 0;
+
+  const months = last12Months();
+  const stackData = months.map(m => {
+    const mCA = state.factures.filter(f=>f.statut==='payee'&&inRange(f.date,m.from,m.to)).reduce((s,f)=>s+Number(f.montant),0);
+    const mCharges = state.charges.filter(c=>inRange(c.date,m.from,m.to)).reduce((s,c)=>s+Number(c.montant),0);
+    return { l:m.l, ca:mCA, charges:mCharges, urssaf:mCA*taux };
+  });
+  const netByMonth = months.map(m=>{
+    const d = stackData[months.indexOf(m)];
+    return { l:m.l, v:Math.max(0,Math.round(d.ca-d.charges-d.urssaf)) };
+  });
+
+  // Répartition charges par catégorie
+  const catLabels = { loyer:'Loyer',materiel:'Matériel',formation:'Formation',
+    assurance:'Assurance',logiciel:'Logiciel',autre:'Autre' };
+  const catCount = {};
+  chargesPeriod.forEach(c=>{ const k=catLabels[c.cat]||c.cat; catCount[k]=(catCount[k]||0)+Number(c.montant); });
+  const catData = Object.entries(catCount).sort((a,b)=>b[1]-a[1]).map(([l,v])=>({l,v:Math.round(v)}));
+
+  // Tableau impayées
+  const impayeesRows = impayeesAll.map(f => {
+    const patient = state.patients.find(p=>p.id===f.patientId);
+    const jours = Math.floor((Date.now()-new Date(f.date+'T12:00').getTime())/86400000);
+    return `<tr>
+      <td>${patient?patient.prenom+' '+patient.nom:'—'}</td>
+      <td>${f.numero}</td>
+      <td>${formatDate(f.date)}</td>
+      <td>${formatAmount(f.montant)}</td>
+      <td><span class="badge badge-${jours>30?'error':'warning'}">${jours}j</span></td>
+      <td><button class="btn btn-ghost btn-sm" style="color:var(--color-success);" onclick="markPaid(${f.id});setTimeout(()=>renderStatsFinancier('${from}','${to}'),300);">
+        <i data-lucide="check"></i> Payée
+      </button></td>
+    </tr>`;
+  }).join('');
+
+  // Sélecteur URSSAF trimestriel
+  const now = new Date();
+  const yearOpts = [now.getFullYear(), now.getFullYear()-1].map(y=>`<option value="${y}">${y}</option>`).join('');
+
+  el.innerHTML = `
+    <div class="kpi-grid">
+      ${kpiCard('CA total', formatAmount(ca), 'factures payées')}
+      ${kpiCard('Charges déductibles', formatAmount(totalCharges), 'sur la période', totalCharges>0?'warning':'')}
+      ${kpiCard('URSSAF estimé', formatAmount(urssaf), `taux ${(taux*100).toFixed(1)} %`)}
+      ${kpiCard('Résultat net estimé', formatAmount(net), 'CA – charges – URSSAF', net>=0?'up':'warning')}
+      ${kpiCard('Factures impayées', formatAmount(montantImpayees), impayeesAll.length+' facture(s)', impayeesAll.length?'warning':'')}
+      ${kpiCard('Délai moy. de paiement', delaiMoy+'j', 'entre émission et paiement')}
+    </div>
+    <div class="stats-charts-grid">
+      ${chartSection('CA / Charges / URSSAF par mois', svgStackedBar(stackData))}
+      ${chartSection('Résultat net mensuel', svgBarChart(netByMonth,{color:'#427a32',label:'€'}))}
+      ${chartSection('Répartition des charges par catégorie', svgPieChart(catData))}
+    </div>
+    ${impayeesAll.length ? `
+    <div class="stats-chart-section">
+      <div class="stats-chart-title">Factures impayées</div>
+      <div class="table-container">
+        <table>
+          <thead><tr><th>Patient</th><th>N°</th><th>Date</th><th>Montant</th><th>Retard</th><th></th></tr></thead>
+          <tbody>${impayeesRows}</tbody>
+        </table>
+      </div>
+    </div>` : ''}
+    <div class="stats-chart-section">
+      <div class="stats-chart-title">Déclaration URSSAF trimestrielle</div>
+      <div style="display:flex;gap:var(--space-3);align-items:center;flex-wrap:wrap;margin-bottom:var(--space-4);">
+        <select class="form-select" id="urssaf-q" style="max-width:120px;" onchange="renderUrssafTrimestriel()">
+          <option value="1">T1 (Jan–Mar)</option>
+          <option value="2">T2 (Avr–Jun)</option>
+          <option value="3">T3 (Jul–Sep)</option>
+          <option value="4" selected>T4 (Oct–Déc)</option>
+        </select>
+        <select class="form-select" id="urssaf-y" style="max-width:100px;" onchange="renderUrssafTrimestriel()">${yearOpts}</select>
+      </div>
+      <div id="urssaf-trim-display"></div>
+    </div>`;
+  lucide.createIcons();
+  renderUrssafTrimestriel();
+}
+
+function renderUrssafTrimestriel() {
+  const q = parseInt(document.getElementById('urssaf-q')?.value || '4');
+  const y = parseInt(document.getElementById('urssaf-y')?.value || new Date().getFullYear());
+  const startMonth = (q-1)*3+1;
+  const from = `${y}-${String(startMonth).padStart(2,'0')}-01`;
+  const endMonth = q*3;
+  const lastDay = new Date(y,endMonth,0).getDate();
+  const to = `${y}-${String(endMonth).padStart(2,'0')}-${String(lastDay).padStart(2,'0')}`;
+  const taux = urssafRate();
+
+  const facPeriod = state.factures.filter(f=>f.statut==='payee'&&inRange(f.date,from,to));
+  const caIndiv = facPeriod.filter(f=>{
+    const s = state.seances.find(ss=>ss.id===f.seanceId);
+    return !s || s.type==='individuel' || s.type==='famille';
+  }).reduce((s,f)=>s+Number(f.montant),0);
+  const caEntreprise = facPeriod.filter(f=>{
+    const s = state.seances.find(ss=>ss.id===f.seanceId);
+    return s && s.type==='entreprise';
+  }).reduce((s,f)=>s+Number(f.montant),0);
+  const caTotal = facPeriod.reduce((s,f)=>s+Number(f.montant),0);
+  const cotisations = caTotal * taux;
+  const deadlines = {1:'30 avril',2:'31 juillet',3:'31 octobre',4:'31 janvier N+1'};
+
+  const el = document.getElementById('urssaf-trim-display');
+  if (!el) return;
+  el.innerHTML = `
+    <div class="kpi-grid" style="margin-bottom:var(--space-4);">
+      ${kpiCard('CA séances individuelles', formatAmount(caIndiv))}
+      ${kpiCard('CA entreprise', formatAmount(caEntreprise))}
+      ${kpiCard('CA total T'+q+' '+y, formatAmount(caTotal))}
+      ${kpiCard('Cotisations dues', formatAmount(cotisations), `taux ${(taux*100).toFixed(1)}%`,'warning')}
+    </div>
+    <div class="alert alert-warning">
+      <i data-lucide="calendar"></i>
+      <div>Date limite de déclaration T${q} : <strong>${deadlines[q]}</strong> — sur <a href="https://www.autoentrepreneur.urssaf.fr" target="_blank" style="color:inherit;">autoentrepreneur.urssaf.fr</a></div>
+    </div>
+    <button class="btn btn-secondary btn-sm" onclick="exportURSSAFTrimestriel(${q},${y})">
+      <i data-lucide="download"></i> Exporter CSV
+    </button>`;
+  lucide.createIcons();
+}
+window.renderUrssafTrimestriel = renderUrssafTrimestriel;
+
+async function exportURSSAFTrimestriel(q, y) {
+  const startMonth = (q-1)*3+1;
+  const from = `${y}-${String(startMonth).padStart(2,'0')}-01`;
+  const endMonth = q*3;
+  const lastDay = new Date(y,endMonth,0).getDate();
+  const to = `${y}-${String(endMonth).padStart(2,'0')}-${String(lastDay).padStart(2,'0')}`;
+  const facPeriod = state.factures.filter(f=>f.statut==='payee'&&inRange(f.date,from,to));
+  const taux = urssafRate();
+
+  try {
+    const path = await dialogSave({
+      defaultPath: `urssaf-T${q}-${y}.csv`,
+      filters: [{ name: 'Fichier CSV', extensions: ['csv'] }],
+    });
+    if (!path) return;
+    const headers = ['N° Facture','Date','Patient','Prestation','Montant TTC (€)','Type'];
+    const rows = facPeriod.map(f => {
+      const patient = state.patients.find(p=>p.id===f.patientId);
+      const seance = state.seances.find(s=>s.id===f.seanceId);
+      return [f.numero, f.date, patient?`${patient.prenom} ${patient.nom}`:'',
+        f.prestation||'Consultation', String(f.montant).replace('.',','),
+        seance?.type||'individuel'];
+    });
+    const caTotal = facPeriod.reduce((s,f)=>s+Number(f.montant),0);
+    const summary = [
+      [], ['CA TOTAL T'+q+' '+y, '', '', '', String(caTotal).replace('.',','), ''],
+      ['COTISATIONS URSSAF ESTIMÉES', '', '', '', String(Math.round(caTotal*taux*100)/100).replace('.',','), ''],
+    ];
+    const csv = '﻿' + [headers,...rows,...summary]
+      .map(r=>r.map(v=>`"${String(v||'').replace(/"/g,'""')}"`).join(';'))
+      .join('\r\n');
+    await writeTextFile(path, csv);
+    toast('Export URSSAF T'+q+' exporté ✓');
+  } catch(e) { toast("Erreur lors de l'export.", 'error'); }
+}
+window.exportURSSAFTrimestriel = exportURSSAFTrimestriel;
+
+// ── Onglet 4 — Activité clinique ─────────────────────────
+
+function renderStatsActivite(from, to) {
+  const el = document.getElementById('stats-tab-activite');
+  if (!el) return;
+  const seancesPeriod = state.seances.filter(s=>inRange(s.date,from,to));
+
+  // PHQ-9 & GAD-7 moyennes (dernier score par patient actif)
+  const patientsActifIds = new Set(seancesPeriod.filter(s=>s.patientId).map(s=>s.patientId));
+  let phqScores = [], gadScores = [];
+  for (const pid of patientsActifIds) {
+    const p = state.patients.find(pp=>pp.id===pid);
+    if (!p) continue;
+    const phq = (p.questionnaires||[]).filter(q=>q.type==='phq9').sort((a,b)=>b.date.localeCompare(a.date))[0];
+    const gad = (p.questionnaires||[]).filter(q=>q.type==='gad7').sort((a,b)=>b.date.localeCompare(a.date))[0];
+    if (phq) phqScores.push(phq.score);
+    if (gad) gadScores.push(gad.score);
+  }
+  const phqMoy = phqScores.length ? Math.round(phqScores.reduce((a,b)=>a+b,0)/phqScores.length*10)/10 : null;
+  const gadMoy = gadScores.length ? Math.round(gadScores.reduce((a,b)=>a+b,0)/gadScores.length*10)/10 : null;
+
+  // Bilans réalisés dans la période
+  const bilans = state.seances.filter(s=>s.type==='bilan'&&inRange(s.date,from,to)).length;
+
+  // Documents générés dans la période (count from all patients' docs — we don't have in state,
+  // so we show note: use a simple query indicator)
+  const nbNotes = state.patients.flatMap(p=>p.notes||[]).filter(n=>inRange(n.date,from,to)).length;
+
+  // Répartition par type de séance
+  const typeLabels = { individuel:'Individuel', couple:'Couple', famille:'Famille',
+    bilan:'Bilan', entreprise:'Entreprise' };
+  const typeCount = {};
+  seancesPeriod.forEach(s=>{
+    const k = typeLabels[s.type]||s.type;
+    typeCount[k]=(typeCount[k]||0)+1;
+  });
+  const typeData = Object.entries(typeCount).sort((a,b)=>b[1]-a[1]).map(([l,v])=>({l,v}));
+
+  // PHQ-9 évolution moyenne par mois
+  const months = last12Months();
+  const phqByMonth = months.map(m => {
+    const scores = state.patients.flatMap(p=>(p.questionnaires||[]).filter(q=>q.type==='phq9'&&inRange(q.date,m.from,m.to)).map(q=>q.score));
+    return { l:m.l, v: scores.length ? Math.round(scores.reduce((a,b)=>a+b,0)/scores.length*10)/10 : 0 };
+  });
+
+  el.innerHTML = `
+    <div class="kpi-grid">
+      ${kpiCard('Score PHQ-9 moyen', phqMoy!==null?phqMoy+'/27':'—', phqScores.length+' patients', phqMoy!==null&&phqMoy<=9?'up':'warning')}
+      ${kpiCard('Score GAD-7 moyen', gadMoy!==null?gadMoy+'/21':'—', gadScores.length+' patients', gadMoy!==null&&gadMoy<=9?'up':'warning')}
+      ${kpiCard('Bilans réalisés', bilans, 'sur la période')}
+      ${kpiCard('Notes cliniques', nbNotes, 'rédigées sur la période')}
+    </div>
+    <div class="stats-charts-grid">
+      ${chartSection('Répartition par type de consultation', svgPieChart(typeData))}
+      ${chartSection('Évolution moyenne PHQ-9 (12 mois)', svgLineChart(phqByMonth,{color:'#a0354a'}))}
+    </div>
+    <div class="alert alert-info" style="margin-top:var(--space-5);">
+      <i data-lucide="info"></i>
+      <div>Ces données agrégées sont destinées à votre usage professionnel uniquement. Elles ne constituent pas un outil de recherche ou de publication.</div>
+    </div>`;
+  lucide.createIcons();
+}
+
+// ── Export 2035 ──────────────────────────────────────────
+
+async function export2035() {
+  const y = new Date().getFullYear();
+  const s = state.settings;
+  const praticien = `${s.prenom||''} ${s.nom||''}`.trim() || 'Praticien';
+  const taux = urssafRate();
+
+  const months = Array.from({length:12},(_,i)=>{
+    const d = new Date(y,i,1);
+    return {
+      label: d.toLocaleDateString('fr-FR',{month:'long'}),
+      from: `${y}-${String(i+1).padStart(2,'0')}-01`,
+      to:   `${y}-${String(i+1).padStart(2,'0')}-${String(new Date(y,i+1,0).getDate()).padStart(2,'0')}`,
+    };
+  });
+
+  const rows = months.map(m => {
+    const mFac = state.factures.filter(f=>f.statut==='payee'&&inRange(f.date,m.from,m.to));
+    const mSea = state.seances.filter(s=>inRange(s.date,m.from,m.to)&&s.statut==='present');
+    const caIndiv = mFac.filter(f=>{const ss=state.seances.find(s2=>s2.id===f.seanceId);return !ss||ss.type!=='entreprise';}).reduce((a,f)=>a+Number(f.montant),0);
+    const caEnt   = mFac.filter(f=>{const ss=state.seances.find(s2=>s2.id===f.seanceId);return ss&&ss.type==='entreprise';}).reduce((a,f)=>a+Number(f.montant),0);
+    const total   = caIndiv + caEnt;
+    return { label:m.label, seances:mSea.length, caIndiv, caEnt, total };
+  });
+
+  const totalAnnuel = rows.reduce((a,r)=>({seances:a.seances+r.seances,caIndiv:a.caIndiv+r.caIndiv,caEnt:a.caEnt+r.caEnt,total:a.total+r.total}),{seances:0,caIndiv:0,caEnt:0,total:0});
+
+  const catLabels = { loyer:'Loyer',materiel:'Matériel',formation:'Formation',assurance:'Assurance',logiciel:'Logiciel',autre:'Autre' };
+  const chargesAnno = state.charges.filter(c=>c.date.startsWith(y+''));
+  const catTotals = {};
+  chargesAnno.forEach(c=>{ const k=catLabels[c.cat]||c.cat; catTotals[k]=(catTotals[k]||0)+Number(c.montant); });
+  const totalChargesAnn = chargesAnno.reduce((a,c)=>a+Number(c.montant),0);
+  const urssafAnn = totalAnnuel.total * taux;
+  const netAnn = totalAnnuel.total - totalChargesAnn - urssafAnn;
+
+  const html = `<!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8">
+  <style>
+    body{font-family:Georgia,serif;font-size:10pt;color:#111;margin:0;padding:2.5cm;}
+    h1{font-size:14pt;margin-bottom:.5rem;} h2{font-size:11pt;border-bottom:1px solid #aaa;padding-bottom:.3rem;margin-top:2rem;}
+    table{width:100%;border-collapse:collapse;margin-top:1rem;font-size:9pt;}
+    th{background:#eee;padding:5px 8px;text-align:left;border:1px solid #ccc;}
+    td{padding:5px 8px;border:1px solid #ddd;}
+    .total{font-weight:700;background:#f5f5f5;}
+    .footer{margin-top:3rem;padding-top:1rem;border-top:1px solid #aaa;font-size:8pt;color:#666;font-style:italic;}
+    @media print{body{padding:1.5cm;}}
+  </style></head><body>
+  <h1>Préparation déclaration fiscale — Année ${y}</h1>
+  <p>${praticien} — Psychologue libéral<br>
+  ${s.siret?'SIRET : '+s.siret+'&nbsp;&nbsp;':''}${s.rpps?'N° RPPS : '+s.rpps:''}</p>
+
+  <h2>A — Recettes</h2>
+  <table>
+    <thead><tr><th>Mois</th><th>Séances</th><th>CA individuel</th><th>CA entreprise</th><th>Total mensuel</th></tr></thead>
+    <tbody>
+      ${rows.map(r=>`<tr><td>${r.label}</td><td>${r.seances}</td><td>${formatAmount(r.caIndiv)}</td><td>${formatAmount(r.caEnt)}</td><td>${formatAmount(r.total)}</td></tr>`).join('')}
+      <tr class="total"><td>TOTAL ${y}</td><td>${totalAnnuel.seances}</td><td>${formatAmount(totalAnnuel.caIndiv)}</td><td>${formatAmount(totalAnnuel.caEnt)}</td><td>${formatAmount(totalAnnuel.total)}</td></tr>
+    </tbody>
+  </table>
+
+  <h2>B — Dépenses déductibles</h2>
+  <table>
+    <thead><tr><th>Catégorie</th><th>Montant annuel</th></tr></thead>
+    <tbody>
+      ${Object.entries(catTotals).map(([k,v])=>`<tr><td>${k}</td><td>${formatAmount(v)}</td></tr>`).join('')}
+      <tr class="total"><td>TOTAL CHARGES</td><td>${formatAmount(totalChargesAnn)}</td></tr>
+    </tbody>
+  </table>
+
+  <h2>C — Cotisations URSSAF estimées</h2>
+  <p>CA annuel : ${formatAmount(totalAnnuel.total)} × ${(taux*100).toFixed(1)} % = <strong>${formatAmount(urssafAnn)}</strong></p>
+
+  <h2>D — Résultat net estimé</h2>
+  <p>${formatAmount(totalAnnuel.total)} − ${formatAmount(totalChargesAnn)} − ${formatAmount(urssafAnn)} = <strong>${formatAmount(netAnn)}</strong></p>
+
+  <div class="footer">Document préparatoire établi à partir des données saisies dans PsyGest. À vérifier avec votre comptable ou l'URSSAF avant déclaration officielle.</div>
+  </body></html>`;
+
+  document.getElementById('print-container').innerHTML = html;
+  window.print();
+  setTimeout(()=>{ document.getElementById('print-container').innerHTML=''; }, 3000);
+}
+window.export2035 = export2035;
 
 // ===== SETTINGS =====
 function loadSettingsForm() {
@@ -948,6 +1616,7 @@ function loadSettingsForm() {
   document.getElementById('set-taux-urssaf').value = s.tauxUrssaf ?? 21.2;
   document.getElementById('set-tarif').value = s.tarifConsultation ?? 60;
   document.getElementById('set-duree').value = s.dureeConsultation ?? 50;
+  document.getElementById('set-objectif-ca').value = s.objectifCA || '';
 }
 
 async function saveSettings() {
@@ -963,6 +1632,7 @@ async function saveSettings() {
     tauxUrssaf: parseFloat(document.getElementById('set-taux-urssaf').value) || 21.2,
     tarifConsultation: parseFloat(document.getElementById('set-tarif').value) || 60,
     dureeConsultation: parseInt(document.getElementById('set-duree').value) || 50,
+    objectifCA: parseFloat(document.getElementById('set-objectif-ca').value) || 0,
   };
   await saveState();
   refreshSidebarCounts();
