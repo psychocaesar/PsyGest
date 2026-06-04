@@ -127,6 +127,18 @@ async function applySchema(db) {
        date_creation TEXT, date_modification TEXT,
        FOREIGN KEY (patient_id) REFERENCES patients(id)
      )`,
+    `CREATE TABLE IF NOT EXISTS documents (
+       id TEXT PRIMARY KEY,
+       patient_id TEXT,
+       type TEXT NOT NULL,
+       titre TEXT NOT NULL,
+       contenu TEXT NOT NULL,
+       statut TEXT DEFAULT 'brouillon',
+       destinataire TEXT,
+       date_creation TEXT NOT NULL,
+       date_modification TEXT,
+       FOREIGN KEY (patient_id) REFERENCES patients(id)
+     )`,
   ];
   for (const sql of tables) {
     await db.execute(sql);
@@ -529,6 +541,53 @@ export async function migrateFromJSON(db) {
 
   console.log('Migration terminée.');
   return true;
+}
+
+// ─── Documents ────────────────────────────────────────────────────────────────
+
+export async function getDocuments(db) {
+  return await db.select(`
+    SELECT d.*, p.prenom || ' ' || p.nom AS patient_nom
+    FROM documents d
+    LEFT JOIN patients p ON d.patient_id = p.id
+    ORDER BY d.date_creation DESC
+  `);
+}
+
+export async function getDocumentsByPatient(db, patientId) {
+  return await db.select(
+    'SELECT * FROM documents WHERE patient_id = ? ORDER BY date_creation DESC',
+    [patientId]
+  );
+}
+
+export async function getDocument(db, id) {
+  const rows = await db.select('SELECT * FROM documents WHERE id = ?', [id]);
+  return rows[0] || null;
+}
+
+export async function createDocument(db, data) {
+  const id = crypto.randomUUID();
+  const now = new Date().toISOString();
+  await db.execute(
+    `INSERT INTO documents (id, patient_id, type, titre, contenu, statut, destinataire, date_creation, date_modification)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [id, data.patient_id || null, data.type, data.titre, data.contenu,
+     data.statut || 'brouillon', data.destinataire || null, now, now]
+  );
+  return id;
+}
+
+export async function updateDocument(db, id, data) {
+  const now = new Date().toISOString();
+  await db.execute(
+    `UPDATE documents SET type=?, titre=?, contenu=?, statut=?, destinataire=?, date_modification=? WHERE id=?`,
+    [data.type, data.titre, data.contenu, data.statut, data.destinataire || null, now, id]
+  );
+}
+
+export async function deleteDocument(db, id) {
+  await db.execute('DELETE FROM documents WHERE id = ?', [id]);
 }
 
 // ─── Export / Import complet ───────────────────────────────────────────────────

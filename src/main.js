@@ -1,7 +1,7 @@
 import { writeTextFile } from '@tauri-apps/plugin-fs';
 import { open as dialogOpen, save as dialogSave, ask } from '@tauri-apps/plugin-dialog';
 import { openUrl } from '@tauri-apps/plugin-opener';
-import { initDb, loadAll, saveAll, migrateFromJSON, exportAllData, importAllData, getAnamnese, saveAnamnese, searchAll } from './db.js';
+import { initDb, loadAll, saveAll, migrateFromJSON, exportAllData, importAllData, getAnamnese, saveAnamnese, searchAll, getDocuments, getDocumentsByPatient, getDocument, createDocument, updateDocument, deleteDocument as dbDeleteDocument } from './db.js';
 
 // ===== STORAGE CONFIG =====
 let _db = null; // instance SQLite partagée
@@ -70,6 +70,8 @@ const pageNames = {
   patients: 'Dossiers patients',
   factures: 'Factures',
   agenda: 'Agenda',
+  documents: 'Documents & Courriers',
+  'document-editor': 'Éditeur de document',
   charges: 'Charges & URSSAF',
   stats: 'Statistiques',
   settings: 'Réglages',
@@ -89,6 +91,7 @@ function navigate(page) {
   if (page === 'charges') refreshCharges();
   if (page === 'stats') refreshStats();
   if (page === 'agenda') renderAgenda();
+  if (page === 'documents') renderDocuments();
   if (page === 'settings') loadSettingsForm();
 }
 window.navigate = navigate;
@@ -1376,7 +1379,7 @@ async function deleteCurrentPatient() {
 window.deleteCurrentPatient = deleteCurrentPatient;
 
 function switchPatientTab(tab) {
-  const tabs = ['infos', 'anamnes', 'notes', 'questionnaires', 'objectifs'];
+  const tabs = ['infos', 'anamnes', 'notes', 'questionnaires', 'objectifs', 'documents'];
   tabs.forEach(t => {
     document.getElementById(`pd-tab-${t}`).classList.toggle('active', t === tab);
   });
@@ -1387,6 +1390,7 @@ function switchPatientTab(tab) {
   if (tab === 'notes') renderNotes();
   if (tab === 'questionnaires') renderQuestionnaires();
   if (tab === 'objectifs') renderObjectifs();
+  if (tab === 'documents') renderPatientDocuments(_currentPatientId);
 }
 window.switchPatientTab = switchPatientTab;
 
@@ -2338,6 +2342,842 @@ document.addEventListener('keydown', e => {
     return;
   }
 });
+
+// ===== DOCUMENTS =====
+
+const DOC_TYPE_LABELS = {
+  liaison_medecin: 'Lettre de liaison — Médecin traitant',
+  liaison_psychiatre: 'Lettre de liaison — Psychiatre',
+  attestation_suivi: 'Attestation de suivi psychologique',
+  attestation_presence: 'Attestation de présence',
+  cr_psychometrique: 'Compte-rendu de bilan psychométrique',
+  cr_orientation: "Compte-rendu de bilan d'orientation professionnelle",
+  mdph: 'Volet psychologique — Dossier MDPH',
+};
+
+let _docState = {
+  id: null, patientId: null, type: 'liaison_medecin',
+  titre: '', contenu: '', statut: 'brouillon', destinataire: '', params: {},
+};
+let _docManualEdit = false;
+let _docPatientCache = null; // { patient, anamnese, seances }
+let _docAllDocs = [];
+let _docTests = []; // [{nom, score, interpretation}] for template cr_psychometrique
+
+// — Helpers ———————————————————————————————————————————————
+
+function extractCityFromAddress(adresse) {
+  if (!adresse) return 'Nîmes';
+  const m = adresse.match(/\d{5}\s+([A-ZÀ-Ÿa-zà-ÿ\s-]+)/);
+  return m ? m[1].trim() : 'Nîmes';
+}
+
+function generateDocTitle(type) {
+  const p = _docPatientCache?.patient;
+  const suffix = p ? ` — ${p.prenom} ${p.nom}` : '';
+  return (DOC_TYPE_LABELS[type] || type) + suffix;
+}
+
+async function loadDocPatientCache(patientId) {
+  if (!patientId) { _docPatientCache = null; return; }
+  const patient = state.patients.find(p => p.id === patientId) || null;
+  const anamnese = patient ? await getAnamnese(_db, patientId) : null;
+  const seances = state.seances
+    .filter(s => s.patientId === patientId)
+    .sort((a, b) => a.date.localeCompare(b.date));
+  _docPatientCache = { patient, anamnese, seances };
+}
+
+// — List view ————————————————————————————————————————————
+
+async function renderDocuments() {
+  try { _docAllDocs = await getDocuments(_db); } catch (_) { _docAllDocs = []; }
+  const patFilter = document.getElementById('doc-filter-patient');
+  if (patFilter) {
+    const prev = patFilter.value;
+    patFilter.innerHTML = '<option value="">— Tous les patients —</option>'
+      + state.patients.map(p => `<option value="${p.id}">${p.prenom} ${p.nom}</option>`).join('');
+    patFilter.value = prev;
+  }
+  renderDocumentsList();
+}
+window.renderDocuments = renderDocuments;
+
+function renderDocumentsList() {
+  const tbody = document.getElementById('documents-tbody');
+  if (!tbody) return;
+  const typeF = document.getElementById('doc-filter-type')?.value || '';
+  const patF  = document.getElementById('doc-filter-patient')?.value || '';
+  const docs  = _docAllDocs.filter(d =>
+    (!typeF || d.type === typeF) && (!patF || d.patient_id === patF)
+  );
+  if (!docs.length) {
+    tbody.innerHTML = `<tr><td colspan="6"><div style="padding:var(--space-8);text-align:center;color:var(--color-text-muted);">Aucun document.</div></td></tr>`;
+    return;
+  }
+  tbody.innerHTML = docs.map(d => `<tr>
+    <td>${formatDate(d.date_creation?.slice(0,10))}</td>
+    <td style="font-size:var(--text-xs);">${DOC_TYPE_LABELS[d.type] || d.type}</td>
+    <td>${d.patient_nom || '—'}</td>
+    <td>${d.titre || '—'}</td>
+    <td>${docStatusBadge(d.statut)}</td>
+    <td><button class="btn btn-ghost btn-sm" onclick="openDocumentEditor('${d.id}')"><i data-lucide="edit-3"></i></button></td>
+  </tr>`).join('');
+  lucide.createIcons();
+}
+window.renderDocumentsList = renderDocumentsList;
+
+function docStatusBadge(statut) {
+  return statut === 'finalise'
+    ? '<span class="doc-status-badge doc-status-finalise">Finalisé</span>'
+    : '<span class="doc-status-badge doc-status-brouillon">Brouillon</span>';
+}
+
+// — Open new / existing ——————————————————————————————————
+
+async function newDocument(patientId = null) {
+  _docState = { id: null, patientId, type: 'liaison_medecin',
+    titre: '', contenu: '', statut: 'brouillon', destinataire: '', params: {} };
+  _docManualEdit = false;
+  _docTests = [];
+  await loadDocPatientCache(patientId);
+  _docState.titre = generateDocTitle('liaison_medecin');
+  navigate('document-editor');
+  await renderDocumentEditor();
+}
+window.newDocument = newDocument;
+
+async function newDocumentForPatient() { await newDocument(_currentPatientId); }
+window.newDocumentForPatient = newDocumentForPatient;
+
+async function openDocumentEditor(id) {
+  try {
+    const doc = await getDocument(_db, id);
+    if (!doc) return;
+    _docState = { id: doc.id, patientId: doc.patient_id || null, type: doc.type,
+      titre: doc.titre, contenu: doc.contenu, statut: doc.statut,
+      destinataire: doc.destinataire || '', params: {} };
+    _docTests = [];
+    _docManualEdit = !!doc.contenu;
+    await loadDocPatientCache(doc.patient_id);
+    navigate('document-editor');
+    await renderDocumentEditor();
+  } catch (e) {
+    console.error('openDocumentEditor:', e);
+    toast('Erreur lors de l\'ouverture du document.', 'error');
+  }
+}
+window.openDocumentEditor = openDocumentEditor;
+
+// — Editor render ————————————————————————————————————————
+
+async function renderDocumentEditor() {
+  const isFinalized = _docState.statut === 'finalise';
+  const titleBar = document.getElementById('doc-editor-title-bar');
+  if (titleBar) titleBar.textContent = _docState.titre || DOC_TYPE_LABELS[_docState.type] || 'Document';
+
+  const btnDraft    = document.getElementById('doc-btn-draft');
+  const btnFinalize = document.getElementById('doc-btn-finalize');
+  const btnReopen   = document.getElementById('doc-btn-reopen');
+  const btnEdit     = document.getElementById('doc-btn-edit-content');
+  if (btnDraft)    btnDraft.style.display    = isFinalized ? 'none' : '';
+  if (btnFinalize) btnFinalize.style.display = isFinalized ? 'none' : '';
+  if (btnReopen)   btnReopen.style.display   = isFinalized ? '' : 'none';
+  if (btnEdit)     btnEdit.disabled          = isFinalized;
+
+  const statusEl = document.getElementById('doc-preview-status');
+  if (statusEl) statusEl.innerHTML = docStatusBadge(_docState.statut);
+
+  const formEl = document.getElementById('doc-editor-form');
+  if (!formEl) return;
+
+  const patient = _docPatientCache?.patient;
+  const patientBlock = patient
+    ? `<div class="form-group"><label>Patient</label><div style="padding:var(--space-2) 0;font-weight:600;">${patient.prenom} ${patient.nom}</div></div>`
+    : `<div class="form-group"><label>Patient</label>
+       <select class="form-select" id="dp-patient" ${isFinalized?'disabled':''} onchange="onDocPatientChange()">
+         <option value="">— Aucun patient —</option>
+         ${state.patients.map(p => `<option value="${p.id}" ${p.id === _docState.patientId ? 'selected':''}>
+           ${p.prenom} ${p.nom}</option>`).join('')}
+       </select></div>`;
+
+  formEl.innerHTML = `
+    <div class="form-group"><label>Type de document</label>
+      <select class="form-select" id="dp-type" ${isFinalized?'disabled':''} onchange="onDocTypeChange()">
+        ${Object.entries(DOC_TYPE_LABELS).map(([v,l]) =>
+          `<option value="${v}" ${v === _docState.type ? 'selected':''}>${l}</option>`).join('')}
+      </select>
+    </div>
+    ${patientBlock}
+    <div class="form-group"><label>Titre du document</label>
+      <input class="form-input" id="dp-titre" value="${_docState.titre || ''}" ${isFinalized?'disabled':''}
+        oninput="_docState.titre=this.value;document.getElementById('doc-editor-title-bar').textContent=this.value||'Document';">
+    </div>
+    <hr style="margin:var(--space-4) 0;border:none;border-top:1px solid var(--color-border);">
+    <div id="doc-specific-fields">${renderDocTypeFields(_docState.type, isFinalized)}</div>
+  `;
+
+  if (_docState.type === 'cr_psychometrique') { _docTests = []; renderDocTests(); }
+
+  lucide.createIcons();
+
+  if (_docManualEdit && _docState.contenu) {
+    document.getElementById('doc-preview-area').innerHTML = renderDocumentHTML(_docState.contenu);
+  } else {
+    _docManualEdit = false;
+    await updateDocumentPreview();
+  }
+
+  // ensure content editor hidden
+  const wrap = document.getElementById('doc-content-editor-wrap');
+  const area = document.getElementById('doc-preview-area');
+  if (wrap) wrap.style.display = 'none';
+  if (area) area.style.display = '';
+  const btnEC = document.getElementById('doc-btn-edit-content');
+  if (btnEC) btnEC.innerHTML = '<i data-lucide="edit-3"></i> Modifier le contenu';
+  lucide.createIcons();
+}
+
+function renderDocTypeFields(type, disabled = false) {
+  const d = disabled ? 'disabled' : '';
+  const onc = `oninput="onDocFieldChange()"`;
+  const oncs = `onchange="onDocFieldChange()"`;
+
+  const field = (label, id, placeholder = '', inputType = 'text') => `
+    <div class="form-group"><label>${label}</label>
+      <input class="form-input" type="${inputType}" id="${id}" placeholder="${placeholder}" ${d} ${onc}>
+    </div>`;
+
+  const ta = (label, id, rows = 4, placeholder = '') => `
+    <div class="form-group"><label>${label}</label>
+      <textarea class="form-textarea" id="${id}" rows="${rows}" placeholder="${placeholder}" ${d} ${onc}></textarea>
+    </div>`;
+
+  const sel = (label, id, options) => `
+    <div class="form-group"><label>${label}</label>
+      <select class="form-select" id="${id}" ${d} ${oncs}>
+        ${options.map(([v,l]) => `<option value="${v}">${l}</option>`).join('')}
+      </select>
+    </div>`;
+
+  const regen = `<button type="button" class="btn btn-ghost btn-sm" onclick="regenDocPreview()"
+    style="width:100%;margin-bottom:var(--space-3);" ${d}>
+    <i data-lucide="refresh-cw"></i> Re-générer depuis le formulaire
+  </button>`;
+
+  const seances = _docPatientCache?.seances || [];
+
+  switch (type) {
+    case 'liaison_medecin':
+      return regen
+        + field('Médecin destinataire', 'dp-destinataire', 'Dr Nom Prénom')
+        + field('Adresse du cabinet (optionnel)', 'dp-adresse-dest', 'Adresse…')
+        + sel('Motif de la liaison', 'dp-motif-liaison', [
+            ['debut','Début de suivi'], ['etape',"Point d'étape"], ['fin','Fin de suivi'],
+            ['preoccupant','Situation préoccupante'], ['autre','Autre']])
+        + ta('Contenu libre', 'dp-contenu-libre', 6, 'Observations cliniques, éléments pertinents…');
+
+    case 'liaison_psychiatre':
+      return regen
+        + field('Psychiatre destinataire', 'dp-destinataire', 'Dr Nom Prénom')
+        + field('Adresse du cabinet (optionnel)', 'dp-adresse-dest', 'Adresse…')
+        + sel('Motif de la liaison', 'dp-motif-liaison', [
+            ['debut','Début de suivi'], ['etape',"Point d'étape"], ['fin','Fin de suivi'],
+            ['preoccupant','Situation préoccupante'], ['autre','Autre']])
+        + sel('Nature de la demande', 'dp-nature-demande', [
+            ['evaluation','Évaluation psychiatrique'], ['traitement','Traitement médicamenteux'],
+            ['hospitalisation','Hospitalisation'], ['coordination','Coordination'], ['autre','Autre']])
+        + ta('Contenu libre', 'dp-contenu-libre', 6, 'Contexte clinique, éléments pertinents…');
+
+    case 'attestation_suivi':
+      return regen
+        + field('Destinataire', 'dp-destinataire', 'À qui de droit')
+        + sel('Fréquence approximative', 'dp-frequence', [
+            ['hebdomadaire','Hebdomadaire'], ['bimensuelle','Bimensuelle'],
+            ['mensuelle','Mensuelle'], ['irreguliere','Irrégulière']])
+        + field("Motif de l'attestation (optionnel)", 'dp-motif-attestation', 'ex. Demande employeur, MDPH…');
+
+    case 'attestation_presence': {
+      const opts = seances.length
+        ? seances.slice().sort((a,b)=>b.date.localeCompare(a.date))
+            .map(s=>`<option value="${s.id}">${formatDate(s.date)}${s.heure?' '+s.heure:''}</option>`).join('')
+        : '<option value="">Aucune séance enregistrée</option>';
+      return regen
+        + `<div class="form-group"><label>Séance</label>
+             <select class="form-select" id="dp-seance-id" ${d} ${oncs}>${opts}</select>
+           </div>`
+        + field('Destinataire', 'dp-destinataire', 'À qui de droit');
+    }
+
+    case 'cr_psychometrique':
+      return regen
+        + field('Motif du bilan', 'dp-motif-bilan', 'Difficultés scolaires, orientation…')
+        + field('Date(s) de passation', 'dp-dates-passation', 'ex. 15/01/2025')
+        + `<div class="form-group"><label>Tests utilisés</label>
+             <div id="doc-tests-list"></div>
+             <button type="button" class="btn btn-ghost btn-sm" onclick="addDocTest()" style="margin-top:var(--space-2);" ${d}>
+               <i data-lucide="plus"></i> Ajouter un test
+             </button>
+           </div>`
+        + ta('Synthèse clinique', 'dp-synthese', 5)
+        + ta('Conclusions et recommandations', 'dp-conclusions', 5)
+        + field('Destinataire', 'dp-destinataire', '');
+
+    case 'cr_orientation':
+      return regen
+        + ta('Contexte de la demande', 'dp-contexte', 3)
+        + ta('Démarche utilisée', 'dp-demarche', 3)
+        + ta('Compétences identifiées', 'dp-competences', 3)
+        + ta('Intérêts et valeurs professionnels', 'dp-interets', 3)
+        + ta("Pistes d'orientation", 'dp-pistes', 3)
+        + ta('Recommandations', 'dp-recommandations', 3)
+        + field('Destinataire', 'dp-destinataire', '');
+
+    case 'mdph':
+      return regen
+        + field("Date d'évaluation", 'dp-date-eval', '', 'date')
+        + sel('Type de handicap concerné', 'dp-type-handicap', [
+            ['psychique','Psychique'], ['cognitif','Cognitif'],
+            ['mental','Mental'], ['mixte','Mixte']])
+        + ta('Limitations fonctionnelles', 'dp-limitations', 4)
+        + ta('Retentissement sur la vie quotidienne', 'dp-quotidien', 3)
+        + ta('Retentissement sur la vie professionnelle', 'dp-professionnel', 3)
+        + ta('Aides et compensations en place', 'dp-aides', 3)
+        + ta('Préconisations', 'dp-preconisations', 3);
+
+    default: return '';
+  }
+}
+
+// Tests répétables (template cr_psychometrique)
+function addDocTest() {
+  _docTests.push({ nom: '', score: '', interpretation: '' });
+  renderDocTests();
+}
+window.addDocTest = addDocTest;
+
+function removeDocTest(i) {
+  _docTests.splice(i, 1);
+  renderDocTests();
+  onDocFieldChange();
+}
+window.removeDocTest = removeDocTest;
+
+function renderDocTests() {
+  const c = document.getElementById('doc-tests-list');
+  if (!c) return;
+  c.innerHTML = _docTests.map((t, i) => `
+    <div style="display:grid;grid-template-columns:1fr 80px 1fr auto;gap:var(--space-2);margin-bottom:var(--space-2);align-items:start;">
+      <input class="form-input" placeholder="Nom du test" value="${t.nom}"
+        oninput="_docTests[${i}].nom=this.value;onDocFieldChange()">
+      <input class="form-input" placeholder="Score" value="${t.score}"
+        oninput="_docTests[${i}].score=this.value;onDocFieldChange()">
+      <input class="form-input" placeholder="Interprétation" value="${t.interpretation}"
+        oninput="_docTests[${i}].interpretation=this.value;onDocFieldChange()">
+      <button class="btn btn-ghost btn-sm" style="color:var(--color-error);" onclick="removeDocTest(${i})">
+        <i data-lucide="x"></i>
+      </button>
+    </div>`).join('');
+  lucide.createIcons();
+}
+
+// — Form change handlers ————————————————————————————————
+
+function onDocTypeChange() {
+  const newType = document.getElementById('dp-type')?.value;
+  if (!newType) return;
+  _docState.type = newType;
+  const titleEl = document.getElementById('dp-titre');
+  if (titleEl && (!titleEl.value || Object.values(DOC_TYPE_LABELS).some(l => titleEl.value.startsWith(l.split(' — ')[0])))) {
+    titleEl.value = generateDocTitle(newType);
+    _docState.titre = titleEl.value;
+    const tb = document.getElementById('doc-editor-title-bar');
+    if (tb) tb.textContent = _docState.titre;
+  }
+  const sf = document.getElementById('doc-specific-fields');
+  if (sf) sf.innerHTML = renderDocTypeFields(newType, false);
+  _docTests = [];
+  if (newType === 'cr_psychometrique') renderDocTests();
+  lucide.createIcons();
+  _docManualEdit = false;
+  updateDocumentPreview();
+}
+window.onDocTypeChange = onDocTypeChange;
+
+function onDocFieldChange() {
+  if (!_docManualEdit) updateDocumentPreview();
+}
+window.onDocFieldChange = onDocFieldChange;
+
+async function onDocPatientChange() {
+  const patientId = document.getElementById('dp-patient')?.value || null;
+  _docState.patientId = patientId;
+  await loadDocPatientCache(patientId);
+  const titleEl = document.getElementById('dp-titre');
+  if (titleEl) {
+    _docState.titre = generateDocTitle(_docState.type);
+    titleEl.value = _docState.titre;
+    const tb = document.getElementById('doc-editor-title-bar');
+    if (tb) tb.textContent = _docState.titre;
+  }
+  if (_docState.type === 'attestation_presence') {
+    const seances = _docPatientCache?.seances || [];
+    const el = document.getElementById('dp-seance-id');
+    if (el) el.innerHTML = seances.length
+      ? seances.slice().sort((a,b)=>b.date.localeCompare(a.date))
+          .map(s=>`<option value="${s.id}">${formatDate(s.date)}${s.heure?' '+s.heure:''}</option>`).join('')
+      : '<option value="">Aucune séance enregistrée</option>';
+  }
+  _docManualEdit = false;
+  await updateDocumentPreview();
+}
+window.onDocPatientChange = onDocPatientChange;
+
+async function regenDocPreview() {
+  _docManualEdit = false;
+  await updateDocumentPreview();
+}
+window.regenDocPreview = regenDocPreview;
+
+// — Preview ——————————————————————————————————————————————
+
+function g(id) { const el = document.getElementById(id); return el ? el.value : ''; }
+
+async function updateDocumentPreview() {
+  if (_docManualEdit) return;
+  const params = {
+    destinataire: g('dp-destinataire'),
+    adresse_dest: g('dp-adresse-dest'),
+    motif_liaison: g('dp-motif-liaison') || 'debut',
+    nature_demande: g('dp-nature-demande') || 'evaluation',
+    contenu_libre: g('dp-contenu-libre'),
+    frequence: g('dp-frequence') || 'hebdomadaire',
+    motif_attestation: g('dp-motif-attestation'),
+    seance_id: g('dp-seance-id'),
+    motif_bilan: g('dp-motif-bilan'),
+    dates_passation: g('dp-dates-passation'),
+    tests: _docTests,
+    synthese: g('dp-synthese'),
+    conclusions: g('dp-conclusions'),
+    contexte: g('dp-contexte'),
+    demarche: g('dp-demarche'),
+    competences: g('dp-competences'),
+    interets: g('dp-interets'),
+    pistes: g('dp-pistes'),
+    recommandations: g('dp-recommandations'),
+    date_eval: g('dp-date-eval'),
+    type_handicap: g('dp-type-handicap') || 'psychique',
+    limitations: g('dp-limitations'),
+    quotidien: g('dp-quotidien'),
+    professionnel: g('dp-professionnel'),
+    aides: g('dp-aides'),
+    preconisations: g('dp-preconisations'),
+  };
+  _docState.destinataire = params.destinataire;
+
+  let body = '';
+  const cache = _docPatientCache;
+  switch (_docState.type) {
+    case 'liaison_medecin':     body = tplLiaisonMedecin(params, cache);    break;
+    case 'liaison_psychiatre':  body = tplLiaisonPsychiatre(params, cache); break;
+    case 'attestation_suivi':   body = tplAttestationSuivi(params, cache);  break;
+    case 'attestation_presence':body = tplAttestationPresence(params, cache);break;
+    case 'cr_psychometrique':   body = tplCRPsychometrique(params, cache);  break;
+    case 'cr_orientation':      body = tplCROrientation(params, cache);     break;
+    case 'mdph':                body = tplMDPH(params, cache);              break;
+  }
+  _docState.contenu = body;
+  const area = document.getElementById('doc-preview-area');
+  if (area) area.innerHTML = renderDocumentHTML(body);
+}
+
+function renderDocumentHTML(bodyHTML) {
+  const s = state.settings;
+  const praticien = `${s.prenom || ''} ${s.nom || ''}`.trim() || 'Praticien';
+  const city = extractCityFromAddress(s.adresse);
+  const dateFormatted = formatDate(today());
+  return `<div class="doc-document">
+    <div class="doc-doc-header">
+      <div class="doc-praticien-info">
+        <strong>${praticien}</strong><br>
+        Psychologue<br>
+        ${s.rpps ? `N° RPPS&nbsp;: ${s.rpps}<br>` : ''}
+        ${s.siret ? `SIRET&nbsp;: ${s.siret}<br>` : ''}
+        ${s.adresse ? `${s.adresse}<br>` : ''}
+        ${s.tel ? `Tél.&nbsp;: ${s.tel}<br>` : ''}
+        ${s.email || ''}
+      </div>
+      <div class="doc-date-lieu">${city}, le ${dateFormatted}</div>
+    </div>
+    <div class="doc-doc-body">${bodyHTML}</div>
+    <div class="doc-doc-signature">
+      <p>${praticien}<br><em>Psychologue</em></p>
+    </div>
+    <div class="doc-doc-footer">
+      Document confidentiel — Secret professionnel (art.&nbsp;226-13 du Code pénal) —
+      ${praticien}, Psychologue${s.rpps ? ', N° RPPS&nbsp;: ' + s.rpps : ''}
+    </div>
+  </div>`;
+}
+
+// — 7 templates ——————————————————————————————————————————
+
+function tplPatientHeader(patient) {
+  if (!patient) return '[Patient non renseigné]';
+  return `<strong>${patient.prenom} ${patient.nom.toUpperCase()}</strong>`;
+}
+
+function tplPrenomNom(patient) {
+  if (!patient) return '[Patient]';
+  return `${patient.prenom} ${patient.nom.toUpperCase()}`;
+}
+
+function nl2br(str) { return (str || '').replace(/\n/g, '<br>'); }
+
+function tplLiaisonMedecin(params, cache) {
+  const p = cache?.patient;
+  const a = cache?.anamnese;
+  const seances = cache?.seances || [];
+  const pn = tplPrenomNom(p);
+  const naissance = p?.naissance ? formatDate(p.naissance) : '—';
+  const premiereSeance = seances[0] ? formatDate(seances[0].date) : '—';
+  const motif = a?.motif_principal || p?.motif || '…';
+  const destBlock = params.destinataire
+    ? `<p><strong>Dr ${params.destinataire}</strong>${params.adresse_dest ? '<br>'+params.adresse_dest : ''}</p>` : '';
+  return `${destBlock}
+    <p><strong>Objet&nbsp;: Prise en charge psychologique de ${pn}</strong></p>
+    <p>Confrère/Consœur,</p>
+    <p>Je me permets de vous adresser ce courrier concernant ${tplPatientHeader(p)},
+    né(e) le ${naissance}, que j'accompagne en consultation de psychologie depuis le ${premiereSeance}.</p>
+    <p>${pn} consulte pour ${motif}.</p>
+    ${params.contenu_libre ? `<p>${nl2br(params.contenu_libre)}</p>` : ''}
+    <p>Je reste disponible pour tout échange complémentaire.</p>
+    <p>Confraternellement,</p>`;
+}
+
+function tplLiaisonPsychiatre(params, cache) {
+  const p = cache?.patient;
+  const a = cache?.anamnese;
+  const seances = cache?.seances || [];
+  const pn = tplPrenomNom(p);
+  const naissance = p?.naissance ? formatDate(p.naissance) : '—';
+  const premiereSeance = seances[0] ? formatDate(seances[0].date) : '—';
+  const motif = a?.motif_principal || p?.motif || '…';
+  const destBlock = params.destinataire
+    ? `<p><strong>Dr ${params.destinataire}</strong>${params.adresse_dest ? '<br>'+params.adresse_dest : ''}</p>` : '';
+  const natureLabels = {
+    evaluation:'Évaluation psychiatrique', traitement:'Traitement médicamenteux',
+    hospitalisation:'Hospitalisation', coordination:'Coordination', autre:'Autre',
+  };
+  const objet = natureLabels[params.nature_demande] || 'Coordination psychiatrique';
+  let traitements = '';
+  if (a?.traitements?.length) {
+    const liste = a.traitements.map(t => t.medicament || String(t)).filter(Boolean).join(', ');
+    if (liste) traitements = `<p>Traitements en cours&nbsp;: ${liste}.</p>`;
+  }
+  return `${destBlock}
+    <p><strong>Objet&nbsp;: ${objet} — ${pn}</strong></p>
+    <p>Confrère/Consœur,</p>
+    <p>Je me permets de vous contacter concernant ${tplPatientHeader(p)}, né(e) le ${naissance},
+    que j'accompagne en suivi psychologique depuis le ${premiereSeance}.</p>
+    <p>${pn} consulte pour ${motif}.</p>
+    ${traitements}
+    ${params.contenu_libre ? `<p>${nl2br(params.contenu_libre)}</p>` : ''}
+    <p>Je reste disponible pour tout échange et vous adresse mes confraternelles salutations.</p>
+    <p>Confraternellement,</p>`;
+}
+
+function tplAttestationSuivi(params, cache) {
+  const p = cache?.patient;
+  const seances = cache?.seances || [];
+  const pn = tplPrenomNom(p);
+  const naissance = p?.naissance ? formatDate(p.naissance) : '—';
+  const premiereSeance = seances[0] ? formatDate(seances[0].date) : '—';
+  const nb = seances.length;
+  const freqLabels = {
+    hebdomadaire:'hebdomadaire', bimensuelle:'bimensuelle',
+    mensuelle:'mensuelle', irreguliere:'irrégulière',
+  };
+  const freq = freqLabels[params.frequence] || 'variable';
+  const s = state.settings;
+  const praticien = `${s.prenom || ''} ${s.nom || ''}`.trim() || 'Praticien';
+  return `<h2 style="text-align:center;font-size:13pt;text-transform:uppercase;margin-bottom:2rem;letter-spacing:.05em;">
+      Attestation de suivi psychologique</h2>
+    <p>Je soussigné(e), ${praticien}, Psychologue${s.rpps?', N° RPPS&nbsp;: '+s.rpps:''}, exerçant en libéral,</p>
+    <p>atteste que ${tplPatientHeader(p)}, né(e) le ${naissance},
+    bénéficie d'un suivi psychologique depuis le ${premiereSeance}.</p>
+    <p>À ce jour, <strong>${nb} séance${nb>1?'s ont':'a'} été réalisée${nb>1?'s':''}</strong>,
+    à une fréquence ${freq}.</p>
+    ${params.motif_attestation ? `<p>Motif&nbsp;: ${params.motif_attestation}.</p>` : ''}
+    <p>Cette attestation est établie à la demande de l'intéressé(e) et pour faire valoir
+    ${params.destinataire || 'à qui de droit'}.</p>`;
+}
+
+function tplAttestationPresence(params, cache) {
+  const p = cache?.patient;
+  const seances = cache?.seances || [];
+  const seance = seances.find(s => s.id === params.seance_id) || seances[seances.length-1] || null;
+  const dateSeance = seance ? formatDate(seance.date) : '—';
+  const heureDebut = seance?.heure || null;
+  let heureFin = null;
+  if (heureDebut && seance?.duree) {
+    const [h, m] = heureDebut.split(':').map(Number);
+    const tot = h * 60 + m + (seance.duree || 50);
+    heureFin = `${String(Math.floor(tot/60)).padStart(2,'0')}:${String(tot%60).padStart(2,'0')}`;
+  }
+  const heureStr = heureDebut ? ` de <strong>${heureDebut}</strong> à <strong>${heureFin||'—'}</strong>` : '';
+  const s = state.settings;
+  const praticien = `${s.prenom || ''} ${s.nom || ''}`.trim() || 'Praticien';
+  return `<h2 style="text-align:center;font-size:13pt;text-transform:uppercase;margin-bottom:2rem;letter-spacing:.05em;">
+      Attestation de présence</h2>
+    <p>Je soussigné(e), ${praticien}, Psychologue${s.rpps?', N° RPPS&nbsp;: '+s.rpps:''},</p>
+    <p>atteste que ${tplPatientHeader(p)} s'est présenté(e) en consultation de psychologie
+    le <strong>${dateSeance}</strong>${heureStr}.</p>
+    <p>Cette attestation est établie à la demande de l'intéressé(e) et pour faire valoir
+    ${params.destinataire || 'à qui de droit'}.</p>`;
+}
+
+function tplCRPsychometrique(params, cache) {
+  const p = cache?.patient;
+  const pn = tplPrenomNom(p);
+  const naissance = p?.naissance ? formatDate(p.naissance) : '—';
+  let age = '—';
+  if (p?.naissance) {
+    const birth = new Date(p.naissance + 'T12:00:00');
+    const now = new Date();
+    let a = now.getFullYear() - birth.getFullYear();
+    if (now.getMonth() - birth.getMonth() < 0 || (now.getMonth() === birth.getMonth() && now.getDate() < birth.getDate())) a--;
+    age = a + ' ans';
+  }
+  const testsRows = (params.tests||[]).map(t =>
+    `<tr><td style="border:1px solid #ccc;padding:6px 10px;">${t.nom||'—'}</td>
+     <td style="border:1px solid #ccc;padding:6px 10px;text-align:center;">${t.score||'—'}</td>
+     <td style="border:1px solid #ccc;padding:6px 10px;">${t.interpretation||'—'}</td></tr>`
+  ).join('');
+  const testsTable = testsRows
+    ? `<table style="width:100%;border-collapse:collapse;margin:1rem 0;font-size:10pt;">
+         <thead><tr>
+           <th style="border:1px solid #ccc;padding:6px 10px;text-align:left;background:#f5f5f5;">Test</th>
+           <th style="border:1px solid #ccc;padding:6px 10px;text-align:center;background:#f5f5f5;">Score</th>
+           <th style="border:1px solid #ccc;padding:6px 10px;text-align:left;background:#f5f5f5;">Interprétation</th>
+         </tr></thead><tbody>${testsRows}</tbody></table>`
+    : '<p><em>Aucun test renseigné.</em></p>';
+  const h3 = (n, t) => `<h3 style="font-size:11pt;text-decoration:underline;margin:1.5rem 0 .5rem;">${n}. ${t}</h3>`;
+  return `<h2 style="text-align:center;font-size:13pt;text-transform:uppercase;margin-bottom:2rem;letter-spacing:.05em;">
+      Compte-rendu de bilan psychométrique</h2>
+    ${h3(1,'Identification')}
+    <p><strong>Patient&nbsp;:</strong> ${pn}<br>
+    <strong>Date de naissance&nbsp;:</strong> ${naissance} (${age})<br>
+    ${params.dates_passation ? `<strong>Date(s) de passation&nbsp;:</strong> ${params.dates_passation}<br>` : ''}
+    ${params.destinataire ? `<strong>Destinataire&nbsp;:</strong> ${params.destinataire}` : ''}</p>
+    ${h3(2,'Motif et contexte de la demande')}
+    <p>${nl2br(params.motif_bilan) || '—'}</p>
+    ${h3(3,'Résultats des évaluations')}
+    ${testsTable}
+    ${h3(4,'Synthèse clinique')}
+    <p>${nl2br(params.synthese) || '—'}</p>
+    ${h3(5,'Conclusions et recommandations')}
+    <p>${nl2br(params.conclusions) || '—'}</p>`;
+}
+
+function tplCROrientation(params, cache) {
+  const p = cache?.patient;
+  const pn = tplPrenomNom(p);
+  const naissance = p?.naissance ? formatDate(p.naissance) : '—';
+  const sec = (n, t, c) => c
+    ? `<h3 style="font-size:11pt;text-decoration:underline;margin:1.5rem 0 .5rem;">${n}. ${t}</h3><p>${nl2br(c)}</p>`
+    : '';
+  return `<h2 style="text-align:center;font-size:13pt;text-transform:uppercase;margin-bottom:2rem;letter-spacing:.05em;">
+      Compte-rendu de bilan d'orientation professionnelle</h2>
+    <p><strong>Patient&nbsp;:</strong> ${pn}<br>
+    <strong>Date de naissance&nbsp;:</strong> ${naissance}<br>
+    ${params.destinataire ? `<strong>Destinataire&nbsp;:</strong> ${params.destinataire}` : ''}</p>
+    ${sec(1,'Contexte et objectifs du bilan', params.contexte)}
+    ${sec(2,'Démarche méthodologique', params.demarche)}
+    ${sec(3,'Compétences et ressources identifiées', params.competences)}
+    ${sec(4,'Intérêts et valeurs professionnels', params.interets)}
+    ${sec(5,"Pistes d'orientation envisagées", params.pistes)}
+    ${sec(6,'Recommandations et prochaines étapes', params.recommandations)}`;
+}
+
+function tplMDPH(params, cache) {
+  const p = cache?.patient;
+  const pn = tplPrenomNom(p);
+  const naissance = p?.naissance ? formatDate(p.naissance) : '—';
+  const typeLabels = { psychique:'Psychique', cognitif:'Cognitif', mental:'Mental', mixte:'Mixte' };
+  const typeH = typeLabels[params.type_handicap] || '';
+  const sec = (t, c) => c
+    ? `<h3 style="font-size:11pt;text-decoration:underline;margin:1.5rem 0 .5rem;">${t}</h3><p>${nl2br(c)}</p>`
+    : '';
+  return `<h2 style="text-align:center;font-size:13pt;text-transform:uppercase;margin-bottom:2rem;letter-spacing:.05em;">
+      Volet psychologique — Dossier MDPH</h2>
+    <p><strong>Patient&nbsp;:</strong> ${pn}<br>
+    <strong>Date de naissance&nbsp;:</strong> ${naissance}<br>
+    ${params.date_eval ? `<strong>Date d'évaluation&nbsp;:</strong> ${formatDate(params.date_eval)}<br>` : ''}
+    ${typeH ? `<strong>Type de handicap&nbsp;:</strong> ${typeH}` : ''}</p>
+    ${sec('Limitations fonctionnelles', params.limitations)}
+    ${sec('Retentissement sur la vie quotidienne', params.quotidien)}
+    ${sec('Retentissement sur la vie professionnelle', params.professionnel)}
+    ${sec('Aides et compensations en place', params.aides)}
+    ${sec('Préconisations', params.preconisations)}
+    <div style="margin-top:2rem;padding:1rem;border:1px solid #bbb;background:#f9f9f9;font-size:9pt;font-style:italic;">
+      Ce document est établi dans le cadre d'une demande MDPH. Il est couvert par le secret professionnel
+      et ne peut être transmis qu'à la MDPH concernée ou au médecin coordonnateur.
+    </div>`;
+}
+
+// — Content edit ——————————————————————————————————————————
+
+function toggleDocContentEdit() {
+  if (_docState.statut === 'finalise') return;
+  const wrap = document.getElementById('doc-content-editor-wrap');
+  const area = document.getElementById('doc-preview-area');
+  const btn  = document.getElementById('doc-btn-edit-content');
+  if (wrap.style.display === 'none') {
+    document.getElementById('doc-content-textarea').value = _docState.contenu || '';
+    wrap.style.display = '';
+    area.style.display = 'none';
+    if (btn) btn.innerHTML = '<i data-lucide="eye"></i> Voir la prévisualisation';
+  } else {
+    cancelDocContentEdit();
+  }
+  lucide.createIcons();
+}
+window.toggleDocContentEdit = toggleDocContentEdit;
+
+function applyDocContentEdit() {
+  _docState.contenu = document.getElementById('doc-content-textarea').value;
+  _docManualEdit = true;
+  document.getElementById('doc-preview-area').innerHTML = renderDocumentHTML(_docState.contenu);
+  document.getElementById('doc-content-editor-wrap').style.display = 'none';
+  document.getElementById('doc-preview-area').style.display = '';
+  const btn = document.getElementById('doc-btn-edit-content');
+  if (btn) btn.innerHTML = '<i data-lucide="edit-3"></i> Modifier le contenu';
+  lucide.createIcons();
+}
+window.applyDocContentEdit = applyDocContentEdit;
+
+function cancelDocContentEdit() {
+  document.getElementById('doc-content-editor-wrap').style.display = 'none';
+  document.getElementById('doc-preview-area').style.display = '';
+  const btn = document.getElementById('doc-btn-edit-content');
+  if (btn) btn.innerHTML = '<i data-lucide="edit-3"></i> Modifier le contenu';
+  lucide.createIcons();
+}
+window.cancelDocContentEdit = cancelDocContentEdit;
+
+// — Save / Finalize / Delete / Print ———————————————————
+
+async function saveDocumentDraft() {
+  if (_docState.statut === 'finalise') return;
+  const titleEl = document.getElementById('dp-titre');
+  if (titleEl) _docState.titre = titleEl.value || DOC_TYPE_LABELS[_docState.type];
+  const data = { patient_id: _docState.patientId, type: _docState.type,
+    titre: _docState.titre || DOC_TYPE_LABELS[_docState.type],
+    contenu: _docState.contenu, statut: 'brouillon', destinataire: _docState.destinataire };
+  try {
+    if (_docState.id) { await updateDocument(_db, _docState.id, data); }
+    else { _docState.id = await createDocument(_db, data); }
+    _docState.statut = 'brouillon';
+    toast('Brouillon enregistré ✓');
+  } catch (e) {
+    console.error('saveDocumentDraft:', e);
+    toast('Erreur lors de la sauvegarde.', 'error');
+  }
+}
+window.saveDocumentDraft = saveDocumentDraft;
+
+async function finalizeDocument() {
+  if (!_docManualEdit) await updateDocumentPreview();
+  const titleEl = document.getElementById('dp-titre');
+  if (titleEl) _docState.titre = titleEl.value || DOC_TYPE_LABELS[_docState.type];
+  const data = { patient_id: _docState.patientId, type: _docState.type,
+    titre: _docState.titre || DOC_TYPE_LABELS[_docState.type],
+    contenu: _docState.contenu, statut: 'finalise', destinataire: _docState.destinataire };
+  try {
+    if (_docState.id) { await updateDocument(_db, _docState.id, data); }
+    else { _docState.id = await createDocument(_db, data); }
+    _docState.statut = 'finalise';
+    toast('Document finalisé ✓');
+    await renderDocumentEditor();
+  } catch (e) {
+    console.error('finalizeDocument:', e);
+    toast('Erreur lors de la finalisation.', 'error');
+  }
+}
+window.finalizeDocument = finalizeDocument;
+
+async function reopenDocument() {
+  if (!_docState.id) return;
+  try {
+    await updateDocument(_db, _docState.id, {
+      patient_id: _docState.patientId, type: _docState.type,
+      titre: _docState.titre, contenu: _docState.contenu,
+      statut: 'brouillon', destinataire: _docState.destinataire,
+    });
+    _docState.statut = 'brouillon';
+    toast('Document rouvert en brouillon.');
+    await renderDocumentEditor();
+  } catch (e) { toast('Erreur.', 'error'); }
+}
+window.reopenDocument = reopenDocument;
+
+async function deleteCurrentDocument() {
+  if (!_docState.id) { navigate('documents'); return; }
+  const ok = await ask('Supprimer ce document définitivement ?', { title: 'Confirmation', kind: 'warning' });
+  if (!ok) return;
+  try {
+    await dbDeleteDocument(_db, _docState.id);
+    toast('Document supprimé.');
+    navigate('documents');
+  } catch (e) { toast('Erreur lors de la suppression.', 'error'); }
+}
+window.deleteCurrentDocument = deleteCurrentDocument;
+
+function printDocument() {
+  const area = document.getElementById('doc-preview-area');
+  if (!area) return;
+  document.getElementById('print-container').innerHTML =
+    `<div class="doc-print-page">${area.innerHTML}</div>`;
+  window.print();
+  setTimeout(() => { document.getElementById('print-container').innerHTML = ''; }, 2000);
+}
+window.printDocument = printDocument;
+
+// — Patient tab ———————————————————————————————————————————
+
+async function renderPatientDocuments(patientId) {
+  const container = document.getElementById('pd-documents-list');
+  if (!container) return;
+  try {
+    const docs = await getDocumentsByPatient(_db, patientId);
+    if (!docs.length) {
+      container.innerHTML = `<div class="empty-state" style="padding:var(--space-8);">
+        <i data-lucide="scroll" style="width:32px;height:32px;"></i>
+        <p>Aucun document pour ce patient.</p>
+        <button class="btn btn-primary btn-sm" onclick="newDocumentForPatient()">
+          <i data-lucide="plus"></i> Créer un document
+        </button>
+      </div>`;
+      lucide.createIcons();
+      return;
+    }
+    container.innerHTML = `<div class="table-container"><table>
+      <thead><tr><th>Date</th><th>Type</th><th>Titre</th><th>Statut</th><th></th></tr></thead>
+      <tbody>${docs.map(d => `<tr>
+        <td>${formatDate(d.date_creation?.slice(0,10))}</td>
+        <td style="font-size:var(--text-xs);">${DOC_TYPE_LABELS[d.type] || d.type}</td>
+        <td>${d.titre || '—'}</td>
+        <td>${docStatusBadge(d.statut)}</td>
+        <td><button class="btn btn-ghost btn-sm" onclick="openDocumentEditor('${d.id}')">
+          <i data-lucide="edit-3"></i></button></td>
+      </tr>`).join('')}
+      </tbody></table></div>`;
+    lucide.createIcons();
+  } catch (e) {
+    container.innerHTML = `<div style="color:var(--color-text-muted);padding:var(--space-4);">Erreur lors du chargement.</div>`;
+  }
+}
 
 // ===== INIT =====
 async function init() {

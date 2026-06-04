@@ -549,4 +549,69 @@ kbd { background:var(--color-surface-offset); border:1px solid var(--color-borde
   #print-container .dossier-score-table td { padding: 6px 10px; border-bottom: 1px solid #eee; }
   #print-container .dossier-footer { margin-top: 40px; padding-top: 14px; border-top: 2px solid #ccc; font-size: 11px; color: #888; text-align: center; }
   #print-container .page-break { page-break-before: always; }
+
+  /* Document print */
+  #print-container .doc-print-page { font-family: Georgia, 'Times New Roman', serif; font-size: 11pt; line-height: 1.6; color: #000; padding: 0; }
+  #print-container .doc-document { max-width: 100%; }
+  #print-container .doc-doc-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 2.5rem; padding-bottom: 1rem; border-bottom: 1px solid #aaa; font-size: 10pt; }
+  #print-container .doc-praticien-info { line-height: 1.5; }
+  #print-container .doc-date-lieu { text-align: right; white-space: nowrap; }
+  #print-container .doc-doc-body p { margin-bottom: 1rem; }
+  #print-container .doc-doc-body h2 { font-size: 13pt; }
+  #print-container .doc-doc-body h3 { font-size: 11pt; }
+  #print-container .doc-doc-signature { text-align: right; margin-top: 3rem; font-size: 11pt; }
+  #print-container .doc-doc-footer { margin-top: 2rem; padding-top: 0.8rem; border-top: 1px solid #aaa; font-size: 8pt; color: #555; text-align: center; }
 }
+
+/* ===== DOCUMENT EDITOR ===== */
+
+.doc-editor-header {
+  display: flex; align-items: center; gap: var(--space-3);
+  padding-bottom: var(--space-4); margin-bottom: var(--space-5);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.doc-editor-body {
+  display: grid; grid-template-columns: 360px 1fr;
+  gap: var(--space-6); align-items: start;
+  min-height: 0;
+}
+
+@media (max-width: 900px) {
+  .doc-editor-body { grid-template-columns: 1fr; }
+}
+
+.doc-editor-form {
+  max-height: calc(100vh - 200px); overflow-y: auto;
+  padding-right: var(--space-2);
+}
+
+.doc-editor-preview-col { display: flex; flex-direction: column; gap: var(--space-3); }
+
+.doc-preview-toolbar {
+  display: flex; align-items: center; gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.doc-preview-frame {
+  border: 1px solid var(--color-border); border-radius: var(--radius-md);
+  background: white; padding: var(--space-8);
+  min-height: 500px; overflow-y: auto;
+  max-height: calc(100vh - 200px);
+}
+
+/* Document preview content */
+.doc-document { font-family: Georgia, 'Times New Roman', serif; font-size: 11pt; line-height: 1.6; color: #1a1a1a; }
+.doc-doc-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 2.5rem; padding-bottom: 1rem; border-bottom: 1px solid #bbb; font-size: 10pt; }
+.doc-praticien-info { line-height: 1.5; }
+.doc-date-lieu { text-align: right; white-space: nowrap; font-size: 10pt; }
+.doc-doc-body p { margin-bottom: 1rem; }
+.doc-doc-body h2 { font-family: Georgia, serif; font-size: 13pt; font-weight: 700; }
+.doc-doc-body h3 { font-family: Georgia, serif; font-size: 11pt; font-weight: 700; }
+.doc-doc-signature { text-align: right; margin-top: 3rem; font-size: 11pt; border-top: 1px solid #bbb; padding-top: 1rem; }
+.doc-doc-footer { margin-top: 2rem; padding-top: 0.8rem; border-top: 1px solid #bbb; font-size: 8pt; color: #666; text-align: center; font-family: 'DM Sans', sans-serif; }
+
+/* Status badges */
+.doc-status-badge { display: inline-block; padding: 2px 8px; border-radius: var(--radius-full); font-size: var(--text-xs); font-weight: 600; }
+.doc-status-brouillon { background: var(--color-warning-highlight); color: var(--color-warning); }
+.doc-status-finalise  { background: var(--color-success-highlight); color: var(--color-success); }

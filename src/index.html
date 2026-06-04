@@ -51,6 +51,9 @@
     <button class="nav-item" data-page="agenda">
       <i data-lucide="calendar"></i> Agenda
     </button>
+    <button class="nav-item" data-page="documents">
+      <i data-lucide="scroll"></i> Documents
+    </button>
   </nav>
   <nav class="nav-section">
     <div class="nav-section-label">Finance</div>
@@ -531,6 +534,79 @@
   </div>
 </div>
 
+<!-- DOCUMENTS — Liste -->
+<section class="page page-content" id="page-documents">
+  <div class="section-header">
+    <h2 class="section-title">Documents &amp; Courriers</h2>
+    <button class="btn btn-primary" onclick="newDocument()">
+      <i data-lucide="plus"></i> Nouveau document
+    </button>
+  </div>
+  <div style="display:flex;gap:var(--space-3);flex-wrap:wrap;margin-bottom:var(--space-5);">
+    <select class="form-select" id="doc-filter-type" onchange="renderDocumentsList()" style="max-width:300px;">
+      <option value="">— Tous les types —</option>
+      <option value="liaison_medecin">Lettre de liaison — Médecin traitant</option>
+      <option value="liaison_psychiatre">Lettre de liaison — Psychiatre</option>
+      <option value="attestation_suivi">Attestation de suivi psychologique</option>
+      <option value="attestation_presence">Attestation de présence</option>
+      <option value="cr_psychometrique">Compte-rendu bilan psychométrique</option>
+      <option value="cr_orientation">Compte-rendu bilan d'orientation</option>
+      <option value="mdph">Volet psychologique — MDPH</option>
+    </select>
+    <select class="form-select" id="doc-filter-patient" onchange="renderDocumentsList()" style="max-width:240px;">
+      <option value="">— Tous les patients —</option>
+    </select>
+  </div>
+  <div class="table-container">
+    <table>
+      <thead>
+        <tr><th>Date</th><th>Type</th><th>Patient</th><th>Titre</th><th>Statut</th><th></th></tr>
+      </thead>
+      <tbody id="documents-tbody">
+        <tr><td colspan="6"><div style="padding:var(--space-8);text-align:center;color:var(--color-text-muted);">Aucun document.</div></td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- DOCUMENT ÉDITEUR -->
+<section class="page page-content" id="page-document-editor">
+  <div class="doc-editor-header">
+    <button class="btn btn-ghost btn-sm" onclick="navigate('documents')">
+      <i data-lucide="arrow-left"></i> Documents
+    </button>
+    <div id="doc-editor-title-bar" style="flex:1;font-family:var(--font-display);font-size:var(--text-base);font-weight:600;padding:0 var(--space-3);"></div>
+    <div style="display:flex;gap:var(--space-2);">
+      <button class="btn btn-ghost btn-sm" style="color:var(--color-error);" id="doc-btn-delete" onclick="deleteCurrentDocument()"><i data-lucide="trash-2"></i></button>
+      <button class="btn btn-ghost btn-sm" id="doc-btn-reopen" onclick="reopenDocument()" style="display:none;"><i data-lucide="lock-open"></i> Rouvrir</button>
+      <button class="btn btn-secondary btn-sm" id="doc-btn-draft" onclick="saveDocumentDraft()"><i data-lucide="save"></i> Brouillon</button>
+      <button class="btn btn-primary btn-sm" id="doc-btn-finalize" onclick="finalizeDocument()"><i data-lucide="check-circle"></i> Finaliser</button>
+    </div>
+  </div>
+  <div class="doc-editor-body">
+    <div class="doc-editor-form" id="doc-editor-form">
+      <!-- filled by JS -->
+    </div>
+    <div class="doc-editor-preview-col">
+      <div class="doc-preview-toolbar">
+        <span id="doc-preview-status" style="flex:1;"></span>
+        <button class="btn btn-ghost btn-sm" id="doc-btn-edit-content" onclick="toggleDocContentEdit()"><i data-lucide="edit-3"></i> Modifier le contenu</button>
+        <button class="btn btn-ghost btn-sm" onclick="printDocument()"><i data-lucide="printer"></i> Imprimer</button>
+      </div>
+      <div class="doc-preview-frame">
+        <div id="doc-preview-area"></div>
+        <div id="doc-content-editor-wrap" style="display:none;">
+          <textarea id="doc-content-textarea" class="form-textarea" style="min-height:480px;font-family:monospace;font-size:var(--text-xs);"></textarea>
+          <div style="display:flex;gap:var(--space-2);margin-top:var(--space-3);">
+            <button class="btn btn-primary btn-sm" onclick="applyDocContentEdit()"><i data-lucide="check"></i> Appliquer</button>
+            <button class="btn btn-ghost btn-sm" onclick="cancelDocContentEdit()">Annuler</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
 <!-- PATIENT DETAIL -->
 <section class="page page-content" id="page-patient-detail">
 
@@ -544,6 +620,7 @@
     <button class="tab-btn" onclick="switchPatientTab('notes')">Notes cliniques</button>
     <button class="tab-btn" onclick="switchPatientTab('questionnaires')">Questionnaires</button>
     <button class="tab-btn" onclick="switchPatientTab('objectifs')">Objectifs</button>
+    <button class="tab-btn" onclick="switchPatientTab('documents')">Documents</button>
   </div>
 
   <div class="patient-tab-panels">
@@ -664,6 +741,17 @@
         </div>
         <div id="engagements-list"></div>
       </div>
+    </div>
+
+    <!-- TAB DOCUMENTS -->
+    <div id="pd-tab-documents">
+      <div class="section-header" style="margin-bottom:var(--space-4);">
+        <h3 class="section-title" style="font-size:var(--text-base);">Documents du patient</h3>
+        <button class="btn btn-primary btn-sm" onclick="newDocumentForPatient()">
+          <i data-lucide="plus"></i> Nouveau document
+        </button>
+      </div>
+      <div id="pd-documents-list"></div>
     </div>
 
   </div><!-- /patient-tab-panels -->
