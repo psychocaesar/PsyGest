@@ -25,6 +25,18 @@
     </div>
     <div class="logo-text">PsyGest<span>Gestion libérale</span></div>
   </div>
+  <div class="search-wrap" id="search-wrap">
+    <div style="position:relative;">
+      <i data-lucide="search" style="position:absolute;left:10px;top:50%;transform:translateY(-50%);width:14px;height:14px;color:var(--color-text-faint);pointer-events:none;"></i>
+      <input type="text" class="global-search-input" id="global-search"
+        placeholder="Rechercher… (Ctrl+K)"
+        oninput="handleGlobalSearch(this.value)"
+        onfocus="showSearchResults()"
+        onkeydown="handleSearchKeydown(event)"
+        autocomplete="off">
+    </div>
+    <div id="search-results-panel" class="search-results-panel" style="display:none;"></div>
+  </div>
   <nav class="nav-section">
     <div class="nav-section-label">Principal</div>
     <button class="nav-item active" data-page="dashboard">
@@ -66,6 +78,18 @@
     <button class="icon-btn" id="themeToggle" aria-label="Changer le thème">
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
     </button>
+    <button class="icon-btn" id="shortcuts-btn" onclick="toggleShortcutsPanel()" title="Raccourcis clavier" style="font-size:13px;font-weight:700;">?</button>
+  </div>
+  <div id="shortcuts-panel" class="shortcuts-panel" style="display:none;">
+    <div class="shortcuts-panel-title">Raccourcis clavier</div>
+    <div class="shortcuts-list">
+      <div><kbd>Ctrl+K</kbd> Recherche globale</div>
+      <div><kbd>Ctrl+N</kbd> Nouvelle séance (fiche patient)</div>
+      <div><kbd>Ctrl+⇧+N</kbd> Nouvelle note (fiche patient)</div>
+      <div><kbd>Ctrl+F</kbd> Nouvelle facture (fiche patient)</div>
+      <div><kbd>Ctrl+P</kbd> Exporter PDF (fiche patient)</div>
+      <div><kbd>Échap</kbd> Fermer fenêtre / recherche</div>
+    </div>
   </div>
 </aside>
 
@@ -510,33 +534,13 @@
 <!-- PATIENT DETAIL -->
 <section class="page page-content" id="page-patient-detail">
 
-  <!-- Header patient -->
-  <div class="patient-detail-header">
-    <div class="patient-detail-avatar" id="pd-avatar">??</div>
-    <div class="patient-detail-meta">
-      <div class="patient-detail-name" id="pd-name">—</div>
-      <div class="patient-detail-sub" id="pd-sub">—</div>
-    </div>
-    <div class="patient-detail-actions">
-      <span id="pd-cloture-badge" style="display:none;" class="badge badge-muted"><i data-lucide="archive" style="width:12px;height:12px;"></i> Dossier clôturé</span>
-      <button class="btn btn-secondary btn-sm" onclick="exportDossierPDF()">
-        <i data-lucide="file-down"></i> Exporter (PDF)
-      </button>
-      <button class="btn btn-secondary btn-sm" id="pd-cloture-btn" onclick="toggleClotureDossier()">
-        <i data-lucide="archive"></i> <span id="pd-cloture-label">Clôturer</span>
-      </button>
-      <button class="btn btn-danger btn-sm" onclick="deleteCurrentPatient()">
-        <i data-lucide="trash-2"></i> Supprimer
-      </button>
-      <button class="btn btn-ghost btn-sm" onclick="navigate('patients')">
-        <i data-lucide="arrow-left"></i> Retour
-      </button>
-    </div>
-  </div>
+  <!-- Dashboard patient (remplace le header statique) -->
+  <div id="pd-dashboard"></div>
 
   <!-- Onglets -->
   <div class="tabs patient-tabs" id="pd-tabs">
     <button class="tab-btn active" onclick="switchPatientTab('infos')">Infos</button>
+    <button class="tab-btn" onclick="switchPatientTab('anamnes')">Anamnèse</button>
     <button class="tab-btn" onclick="switchPatientTab('notes')">Notes cliniques</button>
     <button class="tab-btn" onclick="switchPatientTab('questionnaires')">Questionnaires</button>
     <button class="tab-btn" onclick="switchPatientTab('objectifs')">Objectifs</button>
@@ -550,6 +554,9 @@
         <div id="pd-infos-content"></div>
       </div>
     </div>
+
+    <!-- TAB ANAMNESE -->
+    <div id="pd-tab-anamnes"></div>
 
     <!-- TAB NOTES -->
     <div id="pd-tab-notes">

@@ -1,7 +1,7 @@
 import { writeTextFile } from '@tauri-apps/plugin-fs';
 import { open as dialogOpen, save as dialogSave, ask } from '@tauri-apps/plugin-dialog';
 import { openUrl } from '@tauri-apps/plugin-opener';
-import { initDb, loadAll, saveAll, migrateFromJSON, exportAllData, importAllData } from './db.js';
+import { initDb, loadAll, saveAll, migrateFromJSON, exportAllData, importAllData, getAnamnese, saveAnamnese, searchAll } from './db.js';
 
 // ===== STORAGE CONFIG =====
 let _db = null; // instance SQLite partagée
@@ -1074,30 +1074,212 @@ function openPatient(id) {
   if (!p.questionnaires) p.questionnaires = [];
   if (!p.objectifs) p.objectifs = { valeurs: {}, objectifs: [], engagements: [] };
 
-  document.getElementById('pd-avatar').textContent = getInitials(p.prenom, p.nom);
-  document.getElementById('pd-name').textContent = `${p.prenom} ${p.nom}`;
-  document.getElementById('pd-sub').textContent = [
-    p.naissance ? 'Né(e) le ' + formatDate(p.naissance) : null,
-    p.tel || null,
-    p.email || null,
-  ].filter(Boolean).join(' · ');
-
+  renderPatientDashboard(id);
   renderPatientInfos(id);
-
-  // Clôture badge + bouton
-  const badge = document.getElementById('pd-cloture-badge');
-  const label = document.getElementById('pd-cloture-label');
-  if (p.cloture) {
-    badge.style.display = '';
-    label.textContent = 'Réouvrir';
-  } else {
-    badge.style.display = 'none';
-    label.textContent = 'Clôturer';
-  }
-  lucide.createIcons();
 
   switchPatientTab('infos');
   navigate('patient-detail');
+}
+
+async function renderPatientDashboard(id) {
+  const p = state.patients.find(p => p.id === id);
+  if (!p) return;
+  const container = document.getElementById('pd-dashboard');
+  if (!container) return;
+
+  // Compute age
+  let age = '—';
+  if (p.naissance) {
+    const birth = new Date(p.naissance + 'T12:00:00');
+    const now = new Date();
+    let a = now.getFullYear() - birth.getFullYear();
+    const m = now.getMonth() - birth.getMonth();
+    if (m < 0 || (m === 0 && now.getDate() < birth.getDate())) a--;
+    age = a + ' ans';
+  }
+
+  const patSeances = state.seances.filter(s => s.patientId === p.id);
+  const patFactures = state.factures.filter(f => f.patientId === p.id);
+
+  // KPIs
+  const totalSeances = patSeances.length;
+  const datesSeances = patSeances.map(s => s.date).sort();
+  const firstSeance = datesSeances[0] ? formatDate(datesSeances[0]) : '—';
+
+  // Prochaine séance
+  const todayStr = today();
+  const upcoming = patSeances
+    .filter(s => s.date >= todayStr && s.statut !== 'annule')
+    .sort((a, b) => a.date.localeCompare(b.date) || (a.heure || '').localeCompare(b.heure || ''));
+  const nextSeance = upcoming[0]
+    ? `${formatDate(upcoming[0].date)} ${upcoming[0].heure || ''} (${SEANCE_STATUTS[upcoming[0].statut]?.label || upcoming[0].statut})`
+    : '—';
+
+  // Impayées
+  const unpaidCount = patFactures.filter(f => f.statut === 'en_attente').length;
+
+  // Alertes
+  const now2 = Date.now();
+  const unpaidOld = patFactures.filter(f =>
+    f.statut === 'en_attente' &&
+    Math.floor((now2 - new Date(f.date + 'T12:00:00').getTime()) / 86400000) > 30
+  );
+  const lastSeanceDate = datesSeances.reverse()[0] || null;
+  const daysSinceSeance = lastSeanceDate
+    ? Math.floor((now2 - new Date(lastSeanceDate + 'T12:00:00').getTime()) / 86400000)
+    : 999;
+  const lastNote = (p.notes || []).slice().sort((a, b) => b.date.localeCompare(a.date))[0] || null;
+  const daysSinceNote = lastNote
+    ? Math.floor((now2 - new Date(lastNote.date + 'T12:00:00').getTime()) / 86400000)
+    : 999;
+
+  const alertsHTML = [
+    unpaidOld.length ? `<span class="badge badge-error" style="font-size:11px;">🔴 Impayé &gt; 30j</span>` : '',
+    (daysSinceSeance > 21 && patSeances.length > 0) ? `<span class="badge badge-warning" style="font-size:11px;">🟡 Inactif &gt; 21j</span>` : '',
+    ((p.notes || []).length > 0 && daysSinceNote > 21) ? `<span class="badge badge-warning" style="font-size:11px;">🟡 Pas de note &gt; 21j</span>` : '',
+  ].filter(Boolean).join('');
+
+  // Questionnaire chart data
+  const phq9Data = (p.questionnaires || []).filter(q => q.type === 'phq9').sort((a, b) => a.date.localeCompare(b.date));
+  const gad7Data = (p.questionnaires || []).filter(q => q.type === 'gad7').sort((a, b) => a.date.localeCompare(b.date));
+  const hasScores = phq9Data.length > 0 || gad7Data.length > 0;
+
+  const dualChart = hasScores ? buildDualScoreChart(phq9Data, gad7Data) : '<div style="color:var(--color-text-muted);font-size:var(--text-sm);text-align:center;padding:var(--space-6) 0;">Aucune donnée</div>';
+
+  // Activité récente
+  const lastObj = (p.objectifs?.objectifs || []).slice().sort((a, b) => b.dateCreation.localeCompare(a.dateCreation))[0] || null;
+  const lastNoteHTML = lastNote
+    ? `<div class="pd-activity-label">Dernière note</div><div>${formatDate(lastNote.date)} · <span class="badge badge-primary" style="font-size:10px;">${NOTE_TEMPLATE_LABELS[lastNote.template] || lastNote.template}</span><br><span style="color:var(--color-text-muted);">${(lastNote.contenu || '').replace(/^#+\s*/gm, '').trim().slice(0, 60)}${(lastNote.contenu || '').length > 60 ? '…' : ''}</span></div>`
+    : `<div class="pd-activity-label">Dernière note</div><div style="color:var(--color-text-faint);">—</div>`;
+  const lastObjHTML = lastObj
+    ? `<div class="pd-activity-label">Dernier objectif</div><div>${lastObj.intitule} <span class="badge badge-muted" style="font-size:10px;">${STATUT_LABELS[lastObj.statut] || lastObj.statut}</span></div>`
+    : `<div class="pd-activity-label">Dernier objectif</div><div style="color:var(--color-text-faint);">—</div>`;
+
+  const clotureLabel = p.cloture ? 'Réouvrir' : 'Clôturer';
+  const clotureBadge = p.cloture ? `<span class="badge badge-muted"><i data-lucide="archive" style="width:12px;height:12px;"></i> Dossier clôturé</span>` : '';
+
+  container.innerHTML = `
+    <div class="pd-top-actions">
+      <div class="pd-identity">
+        <div class="patient-avatar" style="width:44px;height:44px;font-size:var(--text-base);">${getInitials(p.prenom, p.nom)}</div>
+        <div>
+          <div style="font-family:var(--font-display);font-size:var(--text-lg);font-weight:600;">${p.prenom} ${p.nom}</div>
+          <div style="font-size:var(--text-xs);color:var(--color-text-muted);">${age}${p.naissance ? ' · né(e) le ' + formatDate(p.naissance) : ''}${p.tel ? ' · ' + p.tel : ''}${p.email ? ' · ' + p.email : ''}</div>
+        </div>
+        ${clotureBadge}
+      </div>
+      <div style="display:flex;gap:var(--space-2);flex-wrap:wrap;">
+        <button class="btn btn-ghost btn-sm" onclick="navigate('patients')"><i data-lucide="arrow-left"></i> Retour</button>
+        <button class="btn btn-secondary btn-sm" onclick="exportDossierPDF()"><i data-lucide="file-down"></i> Export PDF</button>
+        <button class="btn btn-secondary btn-sm" onclick="toggleClotureDossier()"><i data-lucide="archive"></i> ${clotureLabel}</button>
+        <button class="btn btn-danger btn-sm" onclick="deleteCurrentPatient()"><i data-lucide="trash-2"></i> Supprimer</button>
+      </div>
+    </div>
+    <div class="pd-dashboard-grid">
+      <div class="pd-block">
+        <div class="pd-block-title">Résumé</div>
+        <div class="pd-kpi-grid">
+          <div class="pd-kpi-item"><div class="pd-kpi-label">Séances totales</div><div class="pd-kpi-value">${totalSeances}</div></div>
+          <div class="pd-kpi-item"><div class="pd-kpi-label">Première séance</div><div class="pd-kpi-value" style="font-size:var(--text-xs);">${firstSeance}</div></div>
+          <div class="pd-kpi-item"><div class="pd-kpi-label">Prochaine séance</div><div class="pd-kpi-value" style="font-size:var(--text-xs);">${nextSeance}</div></div>
+          <div class="pd-kpi-item"><div class="pd-kpi-label">Factures impayées</div><div class="pd-kpi-value" style="${unpaidCount > 0 ? 'color:var(--color-error);' : ''}">${unpaidCount}</div></div>
+        </div>
+        ${alertsHTML ? `<div class="pd-alerts">${alertsHTML}</div>` : ''}
+      </div>
+      <div class="pd-block">
+        <div class="pd-block-title">Évolution des scores</div>
+        ${dualChart}
+      </div>
+      <div class="pd-block">
+        <div class="pd-block-title">Activité récente</div>
+        <div class="pd-activity-item">${lastNoteHTML}</div>
+        <div class="pd-activity-item">${lastObjHTML}</div>
+        <div class="pd-block-title" style="margin-top:var(--space-3);">Actions rapides</div>
+        <div class="pd-quick-actions">
+          <button class="btn btn-primary btn-sm" onclick="openNewSeanceForPatient(${id})"><i data-lucide="plus"></i> Séance</button>
+          <button class="btn btn-secondary btn-sm" onclick="switchPatientTab('notes')"><i data-lucide="file-text"></i> Note</button>
+          <button class="btn btn-secondary btn-sm" onclick="switchPatientTab('questionnaires')"><i data-lucide="clipboard-list"></i> Questionnaire</button>
+          <button class="btn btn-secondary btn-sm" onclick="openNewFactureForPatient(${id})"><i data-lucide="file-plus"></i> Facture</button>
+        </div>
+      </div>
+    </div>`;
+  lucide.createIcons();
+}
+window.renderPatientDashboard = renderPatientDashboard;
+
+function openNewSeanceForPatient(patientId) {
+  populatePatientSelects();
+  document.getElementById('s-date').value = today();
+  document.getElementById('s-patient').value = patientId;
+  document.getElementById('modalNewSeance').classList.add('open');
+}
+window.openNewSeanceForPatient = openNewSeanceForPatient;
+
+function buildDualScoreChart(phq9Data, gad7Data) {
+  const W = 380, H = 160, PAD = { top: 10, right: 16, bottom: 36, left: 32 };
+  const chartW = W - PAD.left - PAD.right;
+  const chartH = H - PAD.top - PAD.bottom;
+  const maxScore = 27;
+
+  // Build union of dates, last 10 combined
+  const allDates = [...new Set([...phq9Data.map(q => q.date), ...gad7Data.map(q => q.date)])].sort();
+  const last10 = allDates.slice(-10);
+
+  const xScale = i => last10.length === 1 ? PAD.left + chartW / 2 : PAD.left + (i / (last10.length - 1)) * chartW;
+  const yScale = v => PAD.top + chartH - (v / maxScore) * chartH;
+
+  let svg = `<svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg" style="width:100%;">`;
+
+  // Axes
+  svg += `<line x1="${PAD.left}" y1="${PAD.top}" x2="${PAD.left}" y2="${PAD.top + chartH}" stroke="currentColor" stroke-opacity=".2" stroke-width="1"/>`;
+  svg += `<line x1="${PAD.left}" y1="${PAD.top + chartH}" x2="${PAD.left + chartW}" y2="${PAD.top + chartH}" stroke="currentColor" stroke-opacity=".2" stroke-width="1"/>`;
+
+  // Y ticks
+  [0, 9, 18, 27].forEach(v => {
+    const y = yScale(v);
+    svg += `<text x="${PAD.left - 4}" y="${y + 4}" text-anchor="end" font-size="9" fill="currentColor" opacity=".5">${v}</text>`;
+    svg += `<line x1="${PAD.left}" y1="${y}" x2="${PAD.left + chartW}" y2="${y}" stroke="currentColor" stroke-opacity=".08" stroke-width="1" stroke-dasharray="3,3"/>`;
+  });
+
+  // PHQ-9 line
+  const phq9Points = last10.map((d, i) => {
+    const q = phq9Data.filter(q => q.date <= d).slice(-1)[0];
+    return q ? { x: xScale(i), y: yScale(q.score), score: q.score } : null;
+  }).filter(Boolean);
+  if (phq9Points.length > 1) {
+    svg += `<polyline points="${phq9Points.map(p => `${p.x},${p.y}`).join(' ')}" fill="none" stroke="var(--color-primary)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
+  }
+  phq9Points.forEach(pt => {
+    svg += `<circle cx="${pt.x}" cy="${pt.y}" r="3.5" fill="var(--color-primary)" stroke="white" stroke-width="1.5"/>`;
+  });
+
+  // GAD-7 line
+  const gad7Points = last10.map((d, i) => {
+    const q = gad7Data.filter(q => q.date <= d).slice(-1)[0];
+    return q ? { x: xScale(i), y: yScale(q.score), score: q.score } : null;
+  }).filter(Boolean);
+  if (gad7Points.length > 1) {
+    svg += `<polyline points="${gad7Points.map(p => `${p.x},${p.y}`).join(' ')}" fill="none" stroke="var(--color-gold)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
+  }
+  gad7Points.forEach(pt => {
+    svg += `<circle cx="${pt.x}" cy="${pt.y}" r="3.5" fill="var(--color-gold)" stroke="white" stroke-width="1.5"/>`;
+  });
+
+  // X labels
+  last10.forEach((d, i) => {
+    const dateObj = new Date(d + 'T12:00:00');
+    const lbl = `${String(dateObj.getDate()).padStart(2,'0')}/${String(dateObj.getMonth()+1).padStart(2,'0')}`;
+    svg += `<text x="${xScale(i)}" y="${H - 4}" text-anchor="middle" font-size="9" fill="currentColor" opacity=".5">${lbl}</text>`;
+  });
+
+  // Legend
+  svg += `<rect x="${PAD.left}" y="${PAD.top}" width="10" height="3" fill="var(--color-primary)" rx="1"/>`;
+  svg += `<text x="${PAD.left + 13}" y="${PAD.top + 4}" font-size="9" fill="currentColor" opacity=".7">PHQ-9</text>`;
+  svg += `<rect x="${PAD.left + 55}" y="${PAD.top}" width="10" height="3" fill="var(--color-gold)" rx="1"/>`;
+  svg += `<text x="${PAD.left + 68}" y="${PAD.top + 4}" font-size="9" fill="currentColor" opacity=".7">GAD-7</text>`;
+
+  svg += `</svg>`;
+  return svg;
 }
 
 function renderPatientInfos(id) {
@@ -1167,18 +1349,8 @@ async function toggleClotureDossier() {
   if (!p) return;
   p.cloture = !p.cloture;
   await saveState();
-  const badge = document.getElementById('pd-cloture-badge');
-  const label = document.getElementById('pd-cloture-label');
-  if (p.cloture) {
-    badge.style.display = '';
-    label.textContent = 'Réouvrir';
-    toast(`Dossier de ${p.prenom} ${p.nom} clôturé.`);
-  } else {
-    badge.style.display = 'none';
-    label.textContent = 'Clôturer';
-    toast(`Dossier de ${p.prenom} ${p.nom} réouvert.`);
-  }
-  lucide.createIcons();
+  toast(p.cloture ? `Dossier de ${p.prenom} ${p.nom} clôturé.` : `Dossier de ${p.prenom} ${p.nom} réouvert.`);
+  renderPatientDashboard(_currentPatientId);
 }
 window.toggleClotureDossier = toggleClotureDossier;
 
@@ -1204,13 +1376,14 @@ async function deleteCurrentPatient() {
 window.deleteCurrentPatient = deleteCurrentPatient;
 
 function switchPatientTab(tab) {
-  const tabs = ['infos', 'notes', 'questionnaires', 'objectifs'];
+  const tabs = ['infos', 'anamnes', 'notes', 'questionnaires', 'objectifs'];
   tabs.forEach(t => {
     document.getElementById(`pd-tab-${t}`).classList.toggle('active', t === tab);
   });
   document.querySelectorAll('#pd-tabs .tab-btn').forEach((btn, i) => {
     btn.classList.toggle('active', tabs[i] === tab);
   });
+  if (tab === 'anamnes') renderAnamneseTab();
   if (tab === 'notes') renderNotes();
   if (tab === 'questionnaires') renderQuestionnaires();
   if (tab === 'objectifs') renderObjectifs();
@@ -1232,9 +1405,14 @@ function renderPatients(filter = '') {
     lucide.createIcons();
     return;
   }
+  const now_ = Date.now();
   grid.innerHTML = patients.map(p => {
     const factures = state.factures.filter(f => f.patientId === p.id);
     const ca = factures.reduce((s, f) => s + (f.statut === 'payee' ? Number(f.montant) : 0), 0);
+    const patSeances = state.seances.filter(s => s.patientId === p.id);
+    const lastSeanceDate = patSeances.map(s => s.date).sort().reverse()[0] || null;
+    const daysSinceSeance = lastSeanceDate ? Math.floor((now_ - new Date(lastSeanceDate + 'T12:00:00').getTime()) / 86400000) : 999;
+    const unpaidOld = state.factures.filter(f => f.patientId === p.id && f.statut === 'en_attente' && Math.floor((now_ - new Date(f.date + 'T12:00:00').getTime()) / 86400000) > 30);
     return `<div class="patient-card${p.cloture ? ' patient-card-cloture' : ''}" onclick="openPatient(${p.id})">
       <div class="patient-card-header">
         <div class="patient-avatar">${getInitials(p.prenom, p.nom)}</div>
@@ -1243,6 +1421,8 @@ function renderPatients(filter = '') {
           <div class="patient-info">${p.naissance ? 'né(e) le ' + formatDate(p.naissance) : 'Date non renseignée'}</div>
         </div>
         ${p.cloture ? '<span class="badge badge-muted" style="flex-shrink:0;">Clôturé</span>' : ''}
+        ${unpaidOld.length ? '<span class="badge badge-error" style="font-size:10px;flex-shrink:0;">Impayé</span>' : ''}
+        ${daysSinceSeance > 21 && patSeances.length > 0 ? '<span class="badge badge-warning" style="font-size:10px;flex-shrink:0;">Inactif</span>' : ''}
       </div>
       ${p.tel ? `<div style="font-size:var(--text-xs);color:var(--color-text-muted);margin-bottom:4px;">📞 ${p.tel}</div>` : ''}
       <div class="patient-stats">
@@ -1847,6 +2027,317 @@ function exportDossierPDF() {
   setTimeout(() => { document.getElementById('print-container').innerHTML = ''; }, 2000);
 }
 window.exportDossierPDF = exportDossierPDF;
+
+// ===== ANAMNÈSE =====
+let _currentTraitements = [];
+
+async function renderAnamneseTab() {
+  const el = document.getElementById('pd-tab-anamnes');
+  if (!el) return;
+  const data = await getAnamnese(_db, _currentPatientId);
+  if (data) _currentTraitements = data.traitements || [];
+  else _currentTraitements = [];
+
+  const v = (key) => (data && data[key]) ? data[key] : '';
+  const sel = (key, val) => (data && data[key]) === val ? 'selected' : '';
+  const modif = data ? (data.date_modification ? new Date(data.date_modification).toLocaleString('fr-FR') : '—') : '—';
+
+  el.innerHTML = `
+    <div style="padding:var(--space-5);">
+      <div class="anamnes-section">
+        <div class="anamnes-section-title">A — Motif de consultation</div>
+        <div class="form-group"><label>Motif principal</label><textarea class="form-textarea" id="an-motif_principal" rows="3">${v('motif_principal')}</textarea></div>
+        <div class="form-group"><label>Depuis quand</label><input class="form-input" id="an-motif_depuis" value="${v('motif_depuis')}"></div>
+        <div class="form-group"><label>Tentatives antérieures</label><textarea class="form-textarea" id="an-tentatives_anterieures" rows="2">${v('tentatives_anterieures')}</textarea></div>
+      </div>
+      <div class="anamnes-section">
+        <div class="anamnes-section-title">B — Histoire du problème</div>
+        <div class="form-group"><label>Contexte d'apparition</label><textarea class="form-textarea" id="an-contexte_apparition" rows="2">${v('contexte_apparition')}</textarea></div>
+        <div class="form-group"><label>Facteurs déclenchants</label><textarea class="form-textarea" id="an-facteurs_declenchants" rows="2">${v('facteurs_declenchants')}</textarea></div>
+        <div class="form-group"><label>Évolution</label><textarea class="form-textarea" id="an-evolution" rows="2">${v('evolution')}</textarea></div>
+      </div>
+      <div class="anamnes-section">
+        <div class="anamnes-section-title">C — Antécédents</div>
+        <div class="form-group"><label>Antécédents personnels</label><textarea class="form-textarea" id="an-atcd_personnels" rows="2">${v('atcd_personnels')}</textarea></div>
+        <div class="form-group"><label>Antécédents familiaux</label><textarea class="form-textarea" id="an-atcd_familiaux" rows="2">${v('atcd_familiaux')}</textarea></div>
+        <div class="form-group"><label>Hospitalisations</label><textarea class="form-textarea" id="an-hospitalisations" rows="2">${v('hospitalisations')}</textarea></div>
+        <div class="form-group"><label>Événements de vie significatifs (optionnel)</label><textarea class="form-textarea" id="an-traumatismes" rows="2">${v('traumatismes')}</textarea></div>
+      </div>
+      <div class="anamnes-section">
+        <div class="anamnes-section-title">D — Situation actuelle</div>
+        <div class="form-row">
+          <div class="form-group"><label>Situation professionnelle</label>
+            <select class="form-select" id="an-situation_pro">
+              <option value="">—</option>
+              <option value="CDI" ${sel('situation_pro','CDI')}>CDI</option>
+              <option value="CDD" ${sel('situation_pro','CDD')}>CDD</option>
+              <option value="Indépendant" ${sel('situation_pro','Indépendant')}>Indépendant</option>
+              <option value="Sans emploi" ${sel('situation_pro','Sans emploi')}>Sans emploi</option>
+              <option value="Retraité" ${sel('situation_pro','Retraité')}>Retraité</option>
+              <option value="Étudiant" ${sel('situation_pro','Étudiant')}>Étudiant</option>
+              <option value="Autre" ${sel('situation_pro','Autre')}>Autre</option>
+            </select>
+          </div>
+          <div class="form-group"><label>Situation familiale</label>
+            <select class="form-select" id="an-situation_familiale">
+              <option value="">—</option>
+              <option value="Célibataire" ${sel('situation_familiale','Célibataire')}>Célibataire</option>
+              <option value="En couple" ${sel('situation_familiale','En couple')}>En couple</option>
+              <option value="Marié·e" ${sel('situation_familiale','Marié·e')}>Marié·e</option>
+              <option value="Séparé·e" ${sel('situation_familiale','Séparé·e')}>Séparé·e</option>
+              <option value="Divorcé·e" ${sel('situation_familiale','Divorcé·e')}>Divorcé·e</option>
+              <option value="Veuf·ve" ${sel('situation_familiale','Veuf·ve')}>Veuf·ve</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label>Enfants</label><input class="form-input" id="an-enfants" value="${v('enfants')}"></div>
+          <div class="form-group"><label>Lieu de vie</label><input class="form-input" id="an-lieu_vie" value="${v('lieu_vie')}"></div>
+        </div>
+      </div>
+      <div class="anamnes-section">
+        <div class="anamnes-section-title">E — Traitements et suivis</div>
+        <div id="an-traitements-list"></div>
+        <button class="btn btn-secondary btn-sm" onclick="addTraitement()" style="margin-bottom:var(--space-3);"><i data-lucide="plus"></i> Ajouter un traitement</button>
+        <div class="form-group"><label>Autres suivis</label><textarea class="form-textarea" id="an-autres_suivis" rows="2">${v('autres_suivis')}</textarea></div>
+      </div>
+      <div class="anamnes-section">
+        <div class="anamnes-section-title">F — Hypothèses et orientation</div>
+        <div class="form-group"><label>Hypothèses diagnostiques</label><textarea class="form-textarea" id="an-hypotheses_diagnostiques" rows="2">${v('hypotheses_diagnostiques')}</textarea></div>
+        <div class="form-group"><label>Orientation thérapeutique</label><textarea class="form-textarea" id="an-orientation_therapeutique" rows="2">${v('orientation_therapeutique')}</textarea></div>
+        <div class="form-group"><label>Objectifs de prise en charge</label><textarea class="form-textarea" id="an-objectifs_prise_en_charge" rows="2">${v('objectifs_prise_en_charge')}</textarea></div>
+        <div class="form-group"><label>Indication de suivi</label>
+          <select class="form-select" id="an-indication_suivi">
+            <option value="">—</option>
+            <option value="Court terme" ${sel('indication_suivi','Court terme')}>Court terme</option>
+            <option value="Moyen terme" ${sel('indication_suivi','Moyen terme')}>Moyen terme</option>
+            <option value="Long terme" ${sel('indication_suivi','Long terme')}>Long terme</option>
+            <option value="À réévaluer" ${sel('indication_suivi','À réévaluer')}>À réévaluer</option>
+          </select>
+        </div>
+      </div>
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:var(--space-3);">
+        <div style="font-size:var(--text-xs);color:var(--color-text-muted);">Dernière modification : ${modif}</div>
+        <div style="display:flex;align-items:center;gap:var(--space-3);">
+          <label style="display:flex;align-items:center;gap:var(--space-2);font-size:var(--text-xs);color:var(--color-text-muted);">
+            <input type="checkbox" id="anamnes-include-pdf" checked> Inclure dans l'export PDF
+          </label>
+          <button class="btn btn-primary" onclick="saveAnamneseForm()"><i data-lucide="save"></i> Enregistrer</button>
+        </div>
+      </div>
+    </div>`;
+  lucide.createIcons();
+  renderTraitements();
+}
+window.renderAnamneseTab = renderAnamneseTab;
+
+function renderTraitements() {
+  const el = document.getElementById('an-traitements-list');
+  if (!el) return;
+  if (!_currentTraitements.length) {
+    el.innerHTML = `<div style="color:var(--color-text-faint);font-size:var(--text-xs);margin-bottom:var(--space-2);">Aucun traitement renseigné.</div>`;
+    return;
+  }
+  el.innerHTML = _currentTraitements.map((t, i) => `
+    <div class="traitement-row">
+      <input class="form-input" placeholder="Médicament" value="${t.nom || ''}" oninput="_currentTraitements[${i}].nom=this.value">
+      <input class="form-input" placeholder="Posologie" value="${t.posologie || ''}" oninput="_currentTraitements[${i}].posologie=this.value">
+      <input class="form-input" placeholder="Prescripteur" value="${t.prescripteur || ''}" oninput="_currentTraitements[${i}].prescripteur=this.value">
+      <button class="btn btn-ghost btn-sm" style="color:var(--color-error);" onclick="removeTraitement(${i})"><i data-lucide="trash-2"></i></button>
+    </div>`).join('');
+  lucide.createIcons();
+}
+window.renderTraitements = renderTraitements;
+
+function addTraitement() {
+  _currentTraitements.push({ nom: '', posologie: '', prescripteur: '' });
+  renderTraitements();
+}
+window.addTraitement = addTraitement;
+
+function removeTraitement(idx) {
+  _currentTraitements.splice(idx, 1);
+  renderTraitements();
+}
+window.removeTraitement = removeTraitement;
+
+async function saveAnamneseForm() {
+  const g = id => document.getElementById(id)?.value || '';
+  const data = {
+    motif_principal: g('an-motif_principal'),
+    motif_depuis: g('an-motif_depuis'),
+    tentatives_anterieures: g('an-tentatives_anterieures'),
+    contexte_apparition: g('an-contexte_apparition'),
+    facteurs_declenchants: g('an-facteurs_declenchants'),
+    evolution: g('an-evolution'),
+    atcd_personnels: g('an-atcd_personnels'),
+    atcd_familiaux: g('an-atcd_familiaux'),
+    hospitalisations: g('an-hospitalisations'),
+    traumatismes: g('an-traumatismes'),
+    situation_pro: g('an-situation_pro'),
+    situation_familiale: g('an-situation_familiale'),
+    enfants: g('an-enfants'),
+    lieu_vie: g('an-lieu_vie'),
+    traitements: _currentTraitements,
+    autres_suivis: g('an-autres_suivis'),
+    hypotheses_diagnostiques: g('an-hypotheses_diagnostiques'),
+    orientation_therapeutique: g('an-orientation_therapeutique'),
+    objectifs_prise_en_charge: g('an-objectifs_prise_en_charge'),
+    indication_suivi: g('an-indication_suivi'),
+  };
+  await saveAnamnese(_db, _currentPatientId, data);
+  toast('Anamnèse enregistrée ✓');
+  // refresh mod date
+  renderAnamneseTab();
+}
+window.saveAnamneseForm = saveAnamneseForm;
+
+// ===== GLOBAL SEARCH =====
+let _searchTimeout = null;
+
+function handleGlobalSearch(query) {
+  clearTimeout(_searchTimeout);
+  if (query.length < 2) {
+    hideSearchResults();
+    return;
+  }
+  _searchTimeout = setTimeout(async () => {
+    const data = await searchAll(_db, query);
+    renderSearchResults(data, query);
+    showSearchResults();
+  }, 150);
+}
+window.handleGlobalSearch = handleGlobalSearch;
+
+function highlight(text, query) {
+  if (!text || !query) return text || '';
+  const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return String(text).replace(new RegExp(`(${escaped})`, 'gi'), '<mark>$1</mark>');
+}
+
+function renderSearchResults(data, query) {
+  const panel = document.getElementById('search-results-panel');
+  if (!panel) return;
+  const { patients, notes, factures, seances } = data;
+  let html = '';
+
+  if (patients.length) {
+    html += `<div class="search-result-group">Patients</div>`;
+    html += patients.map(p => `
+      <div class="search-result-item" onclick="openPatient(${p.id});hideSearchResults();document.getElementById('global-search').value='';">
+        <div class="search-result-main">${highlight(p.prenom + ' ' + p.nom, query)}</div>
+      </div>`).join('');
+  }
+
+  if (notes.length) {
+    html += `<div class="search-result-group">Notes cliniques</div>`;
+    html += notes.map(n => {
+      const patient = state.patients.find(pp => pp.id == n.patient_id);
+      const preview = (n.contenu || '').replace(/^#+\s*/gm, '').trim().slice(0, 80);
+      return `<div class="search-result-item" onclick="openPatient(${n.patient_id});switchPatientTab('notes');hideSearchResults();document.getElementById('global-search').value='';">
+        <div class="search-result-main">${formatDate(n.date)} · ${patient ? patient.prenom + ' ' + patient.nom : '—'}</div>
+        <div class="search-result-sub">${highlight(preview, query)}</div>
+      </div>`;
+    }).join('');
+  }
+
+  if (factures.length) {
+    html += `<div class="search-result-group">Factures</div>`;
+    html += factures.map(f => {
+      const patient = state.patients.find(pp => pp.id == f.patient_id);
+      return `<div class="search-result-item" onclick="openPatient(${f.patient_id});switchPatientTab('infos');hideSearchResults();document.getElementById('global-search').value='';">
+        <div class="search-result-main">${highlight(f.numero, query)}</div>
+        <div class="search-result-sub">${patient ? patient.prenom + ' ' + patient.nom : '—'} · ${formatDate(f.date)} · ${formatAmount(f.montant)}</div>
+      </div>`;
+    }).join('');
+  }
+
+  if (seances.length) {
+    html += `<div class="search-result-group">Séances</div>`;
+    html += seances.map(s => {
+      const patient = s.patient_id ? state.patients.find(pp => pp.id == s.patient_id) : null;
+      return `<div class="search-result-item" onclick="navigate('agenda');hideSearchResults();document.getElementById('global-search').value='';">
+        <div class="search-result-main">${formatDate(s.date)} ${s.heure || ''} · ${patient ? patient.prenom + ' ' + patient.nom : '—'}</div>
+      </div>`;
+    }).join('');
+  }
+
+  if (!html) {
+    html = `<div class="search-empty">Aucun résultat pour « ${query} »</div>`;
+  }
+
+  panel.innerHTML = html;
+}
+
+function showSearchResults() {
+  const panel = document.getElementById('search-results-panel');
+  if (panel && panel.innerHTML) panel.style.display = '';
+}
+window.showSearchResults = showSearchResults;
+
+function hideSearchResults() {
+  const panel = document.getElementById('search-results-panel');
+  if (panel) panel.style.display = 'none';
+}
+window.hideSearchResults = hideSearchResults;
+
+function handleSearchKeydown(e) {
+  if (e.key === 'Escape') hideSearchResults();
+}
+window.handleSearchKeydown = handleSearchKeydown;
+
+document.addEventListener('click', e => {
+  const wrap = document.getElementById('search-wrap');
+  if (wrap && !wrap.contains(e.target)) hideSearchResults();
+});
+
+// ===== KEYBOARD SHORTCUTS =====
+function toggleShortcutsPanel() {
+  const panel = document.getElementById('shortcuts-panel');
+  if (panel) panel.style.display = panel.style.display === 'none' ? '' : 'none';
+}
+window.toggleShortcutsPanel = toggleShortcutsPanel;
+
+document.addEventListener('keydown', e => {
+  const ctrl = e.ctrlKey || e.metaKey;
+  if (ctrl && e.key === 'k') {
+    e.preventDefault();
+    document.getElementById('global-search')?.focus();
+    return;
+  }
+  if (e.key === 'Escape') {
+    const openModal = document.querySelector('.modal-overlay.open');
+    if (openModal) { openModal.classList.remove('open'); return; }
+    hideSearchResults();
+    return;
+  }
+  if (!_currentPatientId) return;
+  const inInput = ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName);
+  if (inInput) return;
+  if (ctrl && !e.shiftKey && e.key === 'n') {
+    e.preventDefault();
+    populatePatientSelects();
+    document.getElementById('s-date').value = today();
+    document.getElementById('s-patient').value = _currentPatientId;
+    document.getElementById('modalNewSeance').classList.add('open');
+    return;
+  }
+  if (ctrl && e.shiftKey && e.key === 'N') {
+    e.preventDefault();
+    switchPatientTab('notes');
+    return;
+  }
+  if (ctrl && e.key === 'f') {
+    e.preventDefault();
+    openNewFactureForPatient(_currentPatientId);
+    return;
+  }
+  if (ctrl && e.key === 'p') {
+    e.preventDefault();
+    exportDossierPDF();
+    return;
+  }
+});
 
 // ===== INIT =====
 async function init() {

@@ -114,6 +114,19 @@ async function applySchema(db) {
        notes_progression TEXT,
        realise INTEGER DEFAULT 0
      )`,
+    `CREATE TABLE IF NOT EXISTS anamnese (
+       id TEXT PRIMARY KEY,
+       patient_id TEXT NOT NULL UNIQUE,
+       motif_principal TEXT, motif_depuis TEXT, tentatives_anterieures TEXT,
+       contexte_apparition TEXT, facteurs_declenchants TEXT, evolution TEXT,
+       atcd_personnels TEXT, atcd_familiaux TEXT, hospitalisations TEXT, traumatismes TEXT,
+       situation_pro TEXT, situation_familiale TEXT, enfants TEXT, lieu_vie TEXT,
+       traitements TEXT, autres_suivis TEXT,
+       hypotheses_diagnostiques TEXT, orientation_therapeutique TEXT,
+       objectifs_prise_en_charge TEXT, indication_suivi TEXT,
+       date_creation TEXT, date_modification TEXT,
+       FOREIGN KEY (patient_id) REFERENCES patients(id)
+     )`,
   ];
   for (const sql of tables) {
     await db.execute(sql);
@@ -416,6 +429,53 @@ async function saveChargesAll(db, charges) {
       [String(c.id), c.date, c.desc, c.montant, c.cat || 'autre']
     );
   }
+}
+
+// ─── Anamnèse ──────────────────────────────────────────────────────────────────
+
+export async function getAnamnese(db, patientId) {
+  const rows = await db.select('SELECT * FROM anamnese WHERE patient_id = ?', [patientId]);
+  if (!rows.length) return null;
+  const r = rows[0];
+  return { ...r, traitements: JSON.parse(r.traitements || '[]') };
+}
+
+export async function saveAnamnese(db, patientId, data) {
+  const now = new Date().toISOString();
+  const existing = await db.select('SELECT id, date_creation FROM anamnese WHERE patient_id = ?', [patientId]);
+  const id = existing.length ? existing[0].id : crypto.randomUUID();
+  const dateCreation = existing.length ? existing[0].date_creation || now : now;
+  await db.execute(
+    `INSERT OR REPLACE INTO anamnese (id,patient_id,motif_principal,motif_depuis,tentatives_anterieures,
+     contexte_apparition,facteurs_declenchants,evolution,atcd_personnels,atcd_familiaux,hospitalisations,
+     traumatismes,situation_pro,situation_familiale,enfants,lieu_vie,traitements,autres_suivis,
+     hypotheses_diagnostiques,orientation_therapeutique,objectifs_prise_en_charge,indication_suivi,
+     date_creation,date_modification)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    [id, patientId,
+     data.motif_principal||null, data.motif_depuis||null, data.tentatives_anterieures||null,
+     data.contexte_apparition||null, data.facteurs_declenchants||null, data.evolution||null,
+     data.atcd_personnels||null, data.atcd_familiaux||null, data.hospitalisations||null,
+     data.traumatismes||null, data.situation_pro||null, data.situation_familiale||null,
+     data.enfants||null, data.lieu_vie||null,
+     JSON.stringify(data.traitements||[]), data.autres_suivis||null,
+     data.hypotheses_diagnostiques||null, data.orientation_therapeutique||null,
+     data.objectifs_prise_en_charge||null, data.indication_suivi||null,
+     dateCreation, now]
+  );
+}
+
+// ─── Recherche globale ─────────────────────────────────────────────────────────
+
+export async function searchAll(db, query) {
+  const like = `%${query}%`;
+  const [patients, notes, factures, seances] = await Promise.all([
+    db.select(`SELECT id, nom, prenom FROM patients WHERE LOWER(nom || ' ' || prenom) LIKE LOWER(?) AND actif = 1 LIMIT 5`, [like]),
+    db.select(`SELECT id, patient_id, date, template, contenu FROM notes_cliniques WHERE LOWER(contenu) LIKE LOWER(?) ORDER BY date DESC LIMIT 5`, [like]),
+    db.select(`SELECT id, numero, date, montant, statut, patient_id FROM factures WHERE LOWER(numero) LIKE LOWER(?) LIMIT 5`, [like]),
+    db.select(`SELECT id, date, heure, patient_id, type FROM seances WHERE date LIKE ? OR note_ics LIKE ? LIMIT 5`, [like, like]),
+  ]);
+  return { patients, notes, factures, seances };
 }
 
 // ─── Migration JSON → SQLite ───────────────────────────────────────────────────
