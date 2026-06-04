@@ -1,0 +1,721 @@
+<!DOCTYPE html>
+<html lang="fr" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<title>PsyGest – Gestion libérale</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=DM+Sans:wght@300..700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/style.css">
+<script src="/assets/lucide.min.js"></script>
+</head>
+<body>
+
+<!-- SIDEBAR -->
+<aside class="sidebar" id="sidebar">
+  <div class="sidebar-logo">
+    <div class="logo-mark">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+        <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z"/>
+        <path d="M9 9h.01M15 9h.01M9.5 14a3.5 3.5 0 0 0 5 0"/>
+      </svg>
+    </div>
+    <div class="logo-text">PsyGest<span>Gestion libérale</span></div>
+  </div>
+  <nav class="nav-section">
+    <div class="nav-section-label">Principal</div>
+    <button class="nav-item active" data-page="dashboard">
+      <i data-lucide="layout-dashboard"></i> Tableau de bord
+    </button>
+    <button class="nav-item" data-page="patients">
+      <i data-lucide="users"></i> Dossiers patients <span class="nav-badge" id="nb-patients">0</span>
+    </button>
+    <button class="nav-item" data-page="factures">
+      <i data-lucide="file-text"></i> Factures <span class="nav-badge" id="nb-factures">0</span>
+    </button>
+    <button class="nav-item" data-page="agenda">
+      <i data-lucide="calendar"></i> Agenda
+    </button>
+  </nav>
+  <nav class="nav-section">
+    <div class="nav-section-label">Finance</div>
+    <button class="nav-item" data-page="charges">
+      <i data-lucide="trending-up"></i> Charges &amp; URSSAF
+    </button>
+    <button class="nav-item" data-page="stats">
+      <i data-lucide="bar-chart-2"></i> Statistiques
+    </button>
+  </nav>
+  <nav class="nav-section">
+    <div class="nav-section-label">Application</div>
+    <button class="nav-item" data-page="settings">
+      <i data-lucide="settings"></i> Réglages
+    </button>
+  </nav>
+  <div class="sidebar-footer">
+    <div class="user-info">
+      <div class="user-avatar">?</div>
+      <div>
+        <div class="user-name">Praticien</div>
+        <div class="user-role">Psychologue libéral</div>
+      </div>
+    </div>
+    <button class="icon-btn" id="themeToggle" aria-label="Changer le thème">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+    </button>
+  </div>
+</aside>
+
+<div class="overlay-backdrop" id="backdrop" onclick="closeSidebar()"></div>
+
+<!-- MAIN -->
+<main class="main">
+  <div class="mobile-topbar">
+    <button class="icon-btn" onclick="openSidebar()"><i data-lucide="menu"></i></button>
+    <div style="flex:1;font-family:var(--font-display);font-size:var(--text-base);font-weight:600;">PsyGest</div>
+    <button class="icon-btn" onclick="openModal('modalNewPatient')"><i data-lucide="user-plus"></i></button>
+  </div>
+  <header class="topbar">
+    <div class="topbar-title" id="topbar-title">Tableau de bord</div>
+    <div class="topbar-actions">
+      <button class="btn btn-secondary btn-sm" onclick="openModal('modalNewPatient')">
+        <i data-lucide="user-plus"></i> Nouveau patient
+      </button>
+      <button class="btn btn-primary btn-sm" onclick="openModal('modalNewFacture')">
+        <i data-lucide="plus"></i> Nouvelle facture
+      </button>
+    </div>
+  </header>
+
+  <!-- DASHBOARD -->
+  <section class="page active page-content" id="page-dashboard">
+    <div class="alert alert-info">
+      <i data-lucide="info"></i>
+      <div><strong>Conformité légale :</strong> Toute séance ≥ 25 € TTC doit faire l'objet d'une facture numérotée chronologiquement et sans trou. Les dossiers patients doivent être conservés de manière sécurisée (RGPD).</div>
+    </div>
+    <div class="kpi-grid">
+      <div class="kpi-card">
+        <div class="kpi-label">CA du mois</div>
+        <div class="kpi-value" id="kpi-ca">0 €</div>
+        <div class="kpi-sub kpi-trend-up" id="kpi-ca-sub">—</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">Séances ce mois</div>
+        <div class="kpi-value" id="kpi-seances">0</div>
+        <div class="kpi-sub" id="kpi-seances-sub">séances facturées</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">Patients actifs</div>
+        <div class="kpi-value" id="kpi-patients">0</div>
+        <div class="kpi-sub">dossiers ouverts</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">Factures impayées</div>
+        <div class="kpi-value kpi-trend-warning" id="kpi-impayees">0</div>
+        <div class="kpi-sub kpi-trend-warning" id="kpi-impayees-sub">en attente</div>
+      </div>
+    </div>
+    <div class="charges-bar">
+      <div class="charges-title">⚠️ Charges URSSAF estimées (rappel)</div>
+      <p style="font-size:var(--text-sm);color:var(--color-text-muted);margin-bottom:var(--space-3);">Les charges URSSAF peuvent représenter plusieurs centaines d'euros par mois, même en début d'activité. Provisionnez environ 21–22 % de votre CA.</p>
+      <div class="bar-track"><div class="bar-fill" id="urssaf-bar" style="width:0%"></div></div>
+      <div class="bar-labels"><span id="urssaf-montant">0 € provisionnés</span><span id="urssaf-ca">sur 0 € CA</span></div>
+    </div>
+    <div class="section-header">
+      <h2 class="section-title">Dernières factures</h2>
+      <button class="btn btn-ghost btn-sm" onclick="navigate('factures')">Voir tout →</button>
+    </div>
+    <div class="table-container">
+      <table>
+        <thead><tr><th>N° Facture</th><th>Patient</th><th>Date</th><th>Montant</th><th>Statut</th></tr></thead>
+        <tbody id="dashboard-factures-table">
+          <tr><td colspan="5"><div style="padding:var(--space-8);text-align:center;color:var(--color-text-muted);font-size:var(--text-sm);">Aucune facture — créez-en une avec le bouton ci-dessus.</div></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- PATIENTS -->
+  <section class="page page-content" id="page-patients">
+    <div class="section-header">
+      <h2 class="section-title">Dossiers patients</h2>
+      <div class="section-actions">
+        <button class="btn btn-primary" onclick="openModal('modalNewPatient')"><i data-lucide="user-plus"></i> Nouveau patient</button>
+      </div>
+    </div>
+    <div class="alert alert-info">
+      <i data-lucide="shield"></i>
+      <div>Les dossiers patients doivent être conservés de manière <strong>sécurisée</strong> pour respecter le <strong>RGPD</strong>. Chaque patient doit avoir consenti au traitement de ses données.</div>
+    </div>
+    <input type="text" class="search-input" placeholder="Rechercher un patient…" oninput="filterPatients(this.value)" style="margin-bottom:var(--space-4);max-width:360px;">
+    <div class="patient-grid" id="patient-grid">
+      <div class="empty-state">
+        <i data-lucide="users" style="width:48px;height:48px;"></i>
+        <h3>Aucun patient</h3>
+        <p>Ajoutez votre premier dossier patient pour commencer.</p>
+        <button class="btn btn-primary" onclick="openModal('modalNewPatient')"><i data-lucide="user-plus"></i> Ajouter un patient</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- FACTURES -->
+  <section class="page page-content" id="page-factures">
+    <div class="section-header">
+      <h2 class="section-title">Factures</h2>
+      <div class="section-actions">
+        <button class="btn btn-primary" onclick="openModal('modalNewFacture')"><i data-lucide="plus"></i> Nouvelle facture</button>
+      </div>
+    </div>
+    <div class="alert alert-warning">
+      <i data-lucide="alert-triangle"></i>
+      <div>La numérotation doit être <strong>chronologique et sans trou</strong>. Chaque séance ≥ 25 € TTC nécessite une facture, ou si le patient la demande.</div>
+    </div>
+    <div class="table-container">
+      <div class="table-filters">
+        <input type="text" class="search-input" placeholder="Rechercher une facture…" oninput="filterFactures(this.value)">
+        <select class="filter-select" onchange="filterFacturesStatus(this.value)">
+          <option value="">Tous les statuts</option>
+          <option value="payee">Payée</option>
+          <option value="en_attente">En attente</option>
+          <option value="annulee">Annulée</option>
+        </select>
+      </div>
+      <table>
+        <thead><tr><th>N° Facture</th><th>Patient</th><th>Date séance</th><th>Prestation</th><th>Montant TTC</th><th>Statut</th><th>Actions</th></tr></thead>
+        <tbody id="factures-table">
+          <tr><td colspan="7"><div style="padding:var(--space-8);text-align:center;color:var(--color-text-muted);font-size:var(--text-sm);">Aucune facture — commencez par en créer une.</div></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- AGENDA -->
+  <section class="page page-content" id="page-agenda">
+    <div class="section-header">
+      <h2 class="section-title">Agenda des séances</h2>
+      <div class="section-actions">
+        <div class="tabs" style="margin-bottom:0;">
+          <button class="tab-btn active" id="tab-liste" onclick="switchAgendaView('liste')">Liste</button>
+          <button class="tab-btn" id="tab-calendrier" onclick="switchAgendaView('calendrier')">Calendrier</button>
+        </div>
+        <button class="btn btn-secondary btn-sm" onclick="toggleICSPanel()">
+          <i data-lucide="calendar-days"></i> Import iCal
+        </button>
+        <button class="btn btn-primary" onclick="openModal('modalNewSeance')">
+          <i data-lucide="plus"></i> Nouvelle séance
+        </button>
+      </div>
+    </div>
+
+    <!-- Panneau import iCal / Calendly -->
+    <div class="ics-panel" id="ics-panel" style="display:none;">
+      <div class="settings-section-title" style="margin-bottom:var(--space-4);">Import depuis Calendly ou un fichier .ics</div>
+      <div style="display:flex;gap:var(--space-3);align-items:flex-end;flex-wrap:wrap;">
+        <div class="form-group" style="flex:1;min-width:280px;">
+          <label for="calendly-url">URL de votre flux iCal</label>
+          <input class="form-input" id="calendly-url" placeholder="https://calendly.com/events/ical/XXXXX.ics">
+          <div class="form-hint">Dans Calendly : <strong>Paramètres → Calendrier → Lien d'abonnement iCal</strong>. Copiez l'URL et collez-la ici.</div>
+        </div>
+        <div style="display:flex;gap:var(--space-2);flex-shrink:0;">
+          <button class="btn btn-secondary btn-sm" onclick="importICSUrl()"><i data-lucide="link"></i> Depuis l'URL</button>
+          <button class="btn btn-secondary btn-sm" onclick="importICSFile()"><i data-lucide="upload"></i> Fichier .ics</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Vue liste -->
+    <div id="agenda-liste-view">
+      <div class="table-container">
+        <table>
+          <thead><tr><th>Date</th><th>Heure</th><th>Patient</th><th>Type</th><th>Durée</th><th>Facturé</th><th>Actions</th></tr></thead>
+          <tbody id="seances-table">
+            <tr><td colspan="7"><div style="padding:var(--space-8);text-align:center;color:var(--color-text-muted);font-size:var(--text-sm);">Aucune séance planifiée.</div></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Vue calendrier -->
+    <div id="agenda-calendrier-view" style="display:none;">
+      <div id="calendar-container"></div>
+    </div>
+  </section>
+
+  <!-- CHARGES -->
+  <section class="page page-content" id="page-charges">
+    <h2 class="section-title" style="margin-bottom:var(--space-6);">Charges &amp; URSSAF</h2>
+    <div class="alert alert-warning">
+      <i data-lucide="alert-circle"></i>
+      <div>Les charges URSSAF peuvent représenter <strong>plusieurs centaines d'euros par mois</strong>, même au début de l'activité. Provisionnez au minimum 21,2 % de votre CA brut (taux BNC micro-entreprise 2024).</div>
+    </div>
+    <div class="kpi-grid">
+      <div class="kpi-card"><div class="kpi-label">CA total</div><div class="kpi-value" id="charges-ca">0 €</div><div class="kpi-sub">toutes périodes</div></div>
+      <div class="kpi-card"><div class="kpi-label">URSSAF estimé</div><div class="kpi-value kpi-trend-warning" id="charges-urssaf">0 €</div><div class="kpi-sub">à provisionner</div></div>
+      <div class="kpi-card"><div class="kpi-label">Charges saisies</div><div class="kpi-value" id="charges-total">0 €</div><div class="kpi-sub">loyer, matériel, etc.</div></div>
+      <div class="kpi-card"><div class="kpi-label">Bénéfice net estimé</div><div class="kpi-value kpi-trend-up" id="charges-net">0 €</div><div class="kpi-sub">après charges</div></div>
+    </div>
+    <div class="section-header">
+      <h3 class="section-title" style="font-size:var(--text-base);">Saisir une charge</h3>
+    </div>
+    <div class="table-container" style="margin-bottom:var(--space-6);">
+      <div style="padding:var(--space-5);display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:var(--space-3);align-items:end;">
+        <div class="form-group"><label>Description</label><input class="form-input" id="charge-desc" placeholder="Loyer cabinet, supervision…"></div>
+        <div class="form-group"><label>Montant (€)</label><input class="form-input" id="charge-montant" type="number" min="0" step="0.01" placeholder="0.00"></div>
+        <div class="form-group"><label>Catégorie</label>
+          <select class="form-select" id="charge-cat">
+            <option value="loyer">Loyer / Local</option>
+            <option value="materiel">Matériel</option>
+            <option value="formation">Formation / Supervision</option>
+            <option value="assurance">Assurance / Mutuelle</option>
+            <option value="logiciel">Logiciels / Abonnements</option>
+            <option value="autre">Autre</option>
+          </select>
+        </div>
+        <button class="btn btn-primary" onclick="addCharge()"><i data-lucide="plus"></i> Ajouter</button>
+      </div>
+    </div>
+    <div class="table-container">
+      <table>
+        <thead><tr><th>Description</th><th>Catégorie</th><th>Montant</th><th>Date</th><th></th></tr></thead>
+        <tbody id="charges-table">
+          <tr><td colspan="5"><div style="padding:var(--space-8);text-align:center;color:var(--color-text-muted);font-size:var(--text-sm);">Aucune charge saisie.</div></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- STATS -->
+  <section class="page page-content" id="page-stats">
+    <h2 class="section-title" style="margin-bottom:var(--space-6);">Statistiques</h2>
+    <div class="kpi-grid">
+      <div class="kpi-card"><div class="kpi-label">CA total</div><div class="kpi-value" id="stats-ca">0 €</div></div>
+      <div class="kpi-card"><div class="kpi-label">Nb factures</div><div class="kpi-value" id="stats-nb">0</div></div>
+      <div class="kpi-card"><div class="kpi-label">Panier moyen</div><div class="kpi-value" id="stats-moy">0 €</div></div>
+      <div class="kpi-card"><div class="kpi-label">Taux recouvrement</div><div class="kpi-value kpi-trend-up" id="stats-taux">—</div></div>
+    </div>
+    <div class="alert alert-success">
+      <i data-lucide="check-circle"></i>
+      <div>Toutes vos données sont stockées <strong>localement sur votre disque</strong> dans <code>~/Documents/PsyGest/data.json</code>, aucune donnée patient n'est envoyée sur un serveur — conformité RGPD assurée.</div>
+    </div>
+  </section>
+
+  <!-- RÉGLAGES -->
+  <section class="page page-content" id="page-settings">
+    <h2 class="section-title" style="margin-bottom:var(--space-6);">Réglages</h2>
+
+    <div class="alert alert-warning">
+      <i data-lucide="database"></i>
+      <div>Données stockées dans <strong>~/Documents/PsyGest/data.json</strong>. Ce dossier contient des données de santé — évitez de le placer dans un espace synchronisé en ligne (iCloud, Dropbox, OneDrive).</div>
+    </div>
+
+    <div class="settings-grid">
+      <div>
+        <div class="settings-section-title">Identité du praticien</div>
+        <div class="form-row" style="margin-bottom:var(--space-4);">
+          <div class="form-group"><label for="set-prenom">Prénom</label><input class="form-input" id="set-prenom" placeholder="Sophie"></div>
+          <div class="form-group"><label for="set-nom">Nom</label><input class="form-input" id="set-nom" placeholder="Martin"></div>
+        </div>
+        <div class="form-row" style="margin-bottom:var(--space-4);">
+          <div class="form-group">
+            <label for="set-rpps">N° RPPS</label>
+            <input class="form-input" id="set-rpps" placeholder="10 chiffres">
+            <div class="form-hint">Numéro personnel de santé (obligatoire sur factures).</div>
+          </div>
+          <div class="form-group">
+            <label for="set-siret">N° SIRET</label>
+            <input class="form-input" id="set-siret" placeholder="14 chiffres">
+            <div class="form-hint">Disponible après immatriculation URSSAF.</div>
+          </div>
+        </div>
+        <div class="form-group" style="margin-bottom:var(--space-4);">
+          <label for="set-adresse">Adresse professionnelle</label>
+          <textarea class="form-textarea" id="set-adresse" rows="2" placeholder="12 rue de la Paix&#10;75001 Paris"></textarea>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label for="set-tel">Téléphone</label><input class="form-input" id="set-tel" placeholder="01 23 45 67 89"></div>
+          <div class="form-group"><label for="set-email">Email professionnel</label><input class="form-input" id="set-email" type="email" placeholder="cabinet@email.fr"></div>
+        </div>
+      </div>
+
+      <div>
+        <div class="settings-section-title">Paramètres de facturation</div>
+        <div class="form-group" style="margin-bottom:var(--space-4);">
+          <label for="set-taux-urssaf">Taux URSSAF (%)</label>
+          <input class="form-input" id="set-taux-urssaf" type="number" step="0.1" min="0" max="100" value="21.2">
+          <div class="form-hint">21,2 % pour les BNC en micro-entreprise (prestations libérales, 2024).</div>
+        </div>
+        <div class="form-row" style="margin-bottom:var(--space-4);">
+          <div class="form-group">
+            <label for="set-tarif">Tarif consultation par défaut (€)</label>
+            <input class="form-input" id="set-tarif" type="number" step="0.5" min="0" value="60">
+          </div>
+          <div class="form-group">
+            <label for="set-duree">Durée consultation par défaut (min)</label>
+            <input class="form-input" id="set-duree" type="number" step="5" min="15" value="50">
+          </div>
+        </div>
+
+        <div class="settings-section-title" style="margin-top:var(--space-6);">Sauvegarde &amp; Export</div>
+        <div class="export-actions">
+          <button class="btn btn-secondary" onclick="exportData()"><i data-lucide="download"></i> Exporter (JSON)</button>
+          <button class="btn btn-secondary" onclick="importData()"><i data-lucide="upload"></i> Importer</button>
+          <button class="btn btn-secondary" onclick="exportCSV()"><i data-lucide="file-text"></i> Export CSV URSSAF</button>
+        </div>
+        <p style="font-size:var(--text-xs);color:var(--color-text-muted);margin-top:var(--space-3);">L'export JSON permet de sauvegarder toutes vos données. L'export CSV génère un tableau des factures pour votre déclaration URSSAF trimestrielle.</p>
+      </div>
+    </div>
+
+    <div style="margin-top:var(--space-6);">
+      <button class="btn btn-primary" onclick="saveSettings()"><i data-lucide="save"></i> Enregistrer les réglages</button>
+    </div>
+  </section>
+</main>
+
+<!-- MODAL NOUVEAU PATIENT -->
+<div class="modal-overlay" id="modalNewPatient">
+  <div class="modal">
+    <div class="modal-header">
+      <h2 class="modal-title">Nouveau dossier patient</h2>
+      <button class="icon-btn" onclick="closeModal('modalNewPatient')"><i data-lucide="x"></i></button>
+    </div>
+    <div class="modal-body">
+      <div class="alert alert-info"><i data-lucide="shield"></i><div>Consentement RGPD requis avant la création du dossier.</div></div>
+      <div class="form-row">
+        <div class="form-group"><label for="p-prenom">Prénom *</label><input class="form-input" id="p-prenom" placeholder="Prénom"></div>
+        <div class="form-group"><label for="p-nom">Nom *</label><input class="form-input" id="p-nom" placeholder="Nom de famille"></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label for="p-naissance">Date de naissance</label><input class="form-input" id="p-naissance" type="date"></div>
+        <div class="form-group"><label for="p-tel">Téléphone</label><input class="form-input" id="p-tel" placeholder="06 XX XX XX XX"></div>
+      </div>
+      <div class="form-group"><label for="p-email">Email</label><input class="form-input" id="p-email" type="email" placeholder="patient@email.fr"></div>
+      <div class="form-group"><label for="p-motif">Motif de consultation</label><textarea class="form-textarea" id="p-motif" placeholder="Description du motif…"></textarea></div>
+      <div class="form-group">
+        <label><input type="checkbox" id="p-rgpd" style="margin-right:8px;">Le patient a consenti au traitement de ses données personnelles (RGPD) *</label>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('modalNewPatient')">Annuler</button>
+      <button class="btn btn-primary" onclick="savePatient()"><i data-lucide="save"></i> Créer le dossier</button>
+    </div>
+  </div>
+</div>
+
+<!-- MODAL NOUVELLE FACTURE -->
+<div class="modal-overlay" id="modalNewFacture">
+  <div class="modal">
+    <div class="modal-header">
+      <h2 class="modal-title">Nouvelle facture</h2>
+      <button class="icon-btn" onclick="closeModal('modalNewFacture')"><i data-lucide="x"></i></button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label>N° de facture (automatique)</label>
+        <input class="form-input" id="f-numero" readonly style="background:var(--color-surface-offset);color:var(--color-text-muted);">
+        <div class="form-hint">Numérotation chronologique sans trou — générée automatiquement.</div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label for="f-patient">Patient *</label>
+          <select class="form-select" id="f-patient"><option value="">Sélectionner…</option></select>
+        </div>
+        <div class="form-group"><label for="f-date">Date de séance *</label><input class="form-input" id="f-date" type="date"></div>
+      </div>
+      <div class="form-group"><label for="f-prestation">Prestation</label><input class="form-input" id="f-prestation" value="Consultation psychologique" placeholder="Consultation…"></div>
+      <div class="form-row">
+        <div class="form-group"><label for="f-montant">Montant TTC (€) *</label><input class="form-input" id="f-montant" type="number" min="0" step="0.5" placeholder="60.00"></div>
+        <div class="form-group"><label for="f-duree">Durée (min)</label><input class="form-input" id="f-duree" type="number" min="15" step="5" value="50"></div>
+      </div>
+      <div class="form-group"><label for="f-statut">Statut</label>
+        <select class="form-select" id="f-statut">
+          <option value="payee">Payée</option>
+          <option value="en_attente">En attente de paiement</option>
+        </select>
+      </div>
+      <div class="form-group"><label for="f-notes">Notes (privées)</label><textarea class="form-textarea" id="f-notes" placeholder="Notes internes…"></textarea></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('modalNewFacture')">Annuler</button>
+      <button class="btn btn-primary" onclick="saveFacture()"><i data-lucide="file-text"></i> Créer la facture</button>
+    </div>
+  </div>
+</div>
+
+<!-- MODAL APERÇU FACTURE -->
+<div class="modal-overlay" id="modalApercu" style="align-items:flex-start;padding-top:var(--space-8);">
+  <div class="modal" style="max-width:750px;">
+    <div class="modal-header">
+      <h2 class="modal-title">Aperçu de la facture</h2>
+      <div style="display:flex;gap:var(--space-2);align-items:center;">
+        <button class="btn btn-secondary btn-sm" id="facture-email-btn" style="display:none" onclick="sendCurrentFactureByEmail()"><i data-lucide="mail"></i> Envoyer par mail</button>
+        <button class="btn btn-secondary btn-sm" onclick="printFacture()"><i data-lucide="printer"></i> Imprimer / PDF</button>
+        <button class="icon-btn" onclick="closeModal('modalApercu')"><i data-lucide="x"></i></button>
+      </div>
+    </div>
+    <div class="modal-body" id="apercu-content"></div>
+  </div>
+</div>
+
+<!-- MODAL SÉANCE (création + édition) -->
+<div class="modal-overlay" id="modalNewSeance">
+  <div class="modal">
+    <div class="modal-header">
+      <h2 class="modal-title" id="seance-modal-title">Planifier une séance</h2>
+      <button class="icon-btn" onclick="closeModal('modalNewSeance')"><i data-lucide="x"></i></button>
+    </div>
+    <div class="modal-body">
+      <div class="form-row">
+        <div class="form-group"><label for="s-patient">Patient</label>
+          <select class="form-select" id="s-patient"><option value="">Sélectionner…</option></select>
+        </div>
+        <div class="form-group"><label for="s-date">Date *</label><input class="form-input" id="s-date" type="date"></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label for="s-heure">Heure *</label><input class="form-input" id="s-heure" type="time" value="10:00"></div>
+        <div class="form-group"><label for="s-duree">Durée (min)</label><input class="form-input" id="s-duree" type="number" value="50" step="5"></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label for="s-type">Type</label>
+          <select class="form-select" id="s-type">
+            <option value="individuel">Individuel</option>
+            <option value="couple">Couple</option>
+            <option value="famille">Famille</option>
+            <option value="bilan">Bilan psychologique</option>
+          </select>
+        </div>
+        <div class="form-group"><label for="s-statut">Statut</label>
+          <select class="form-select" id="s-statut">
+            <option value="planifie">Planifié</option>
+            <option value="confirme">Confirmé</option>
+            <option value="present">Présent ✓</option>
+            <option value="absent">Absent</option>
+            <option value="annule">Annulé</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-group"><label for="s-note">Note interne</label>
+        <input class="form-input" id="s-note-seance" placeholder="Motif d'annulation, remarque…">
+      </div>
+      <input type="hidden" id="s-edit-id">
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('modalNewSeance')">Annuler</button>
+      <button class="btn btn-primary" id="seance-modal-btn" onclick="saveSeance()"><i data-lucide="calendar-plus"></i> Planifier</button>
+    </div>
+  </div>
+</div>
+
+<!-- PATIENT DETAIL -->
+<section class="page page-content" id="page-patient-detail">
+
+  <!-- Header patient -->
+  <div class="patient-detail-header">
+    <div class="patient-detail-avatar" id="pd-avatar">??</div>
+    <div class="patient-detail-meta">
+      <div class="patient-detail-name" id="pd-name">—</div>
+      <div class="patient-detail-sub" id="pd-sub">—</div>
+    </div>
+    <div class="patient-detail-actions">
+      <span id="pd-cloture-badge" style="display:none;" class="badge badge-muted"><i data-lucide="archive" style="width:12px;height:12px;"></i> Dossier clôturé</span>
+      <button class="btn btn-secondary btn-sm" onclick="exportDossierPDF()">
+        <i data-lucide="file-down"></i> Exporter (PDF)
+      </button>
+      <button class="btn btn-secondary btn-sm" id="pd-cloture-btn" onclick="toggleClotureDossier()">
+        <i data-lucide="archive"></i> <span id="pd-cloture-label">Clôturer</span>
+      </button>
+      <button class="btn btn-danger btn-sm" onclick="deleteCurrentPatient()">
+        <i data-lucide="trash-2"></i> Supprimer
+      </button>
+      <button class="btn btn-ghost btn-sm" onclick="navigate('patients')">
+        <i data-lucide="arrow-left"></i> Retour
+      </button>
+    </div>
+  </div>
+
+  <!-- Onglets -->
+  <div class="tabs patient-tabs" id="pd-tabs">
+    <button class="tab-btn active" onclick="switchPatientTab('infos')">Infos</button>
+    <button class="tab-btn" onclick="switchPatientTab('notes')">Notes cliniques</button>
+    <button class="tab-btn" onclick="switchPatientTab('questionnaires')">Questionnaires</button>
+    <button class="tab-btn" onclick="switchPatientTab('objectifs')">Objectifs</button>
+  </div>
+
+  <div class="patient-tab-panels">
+
+    <!-- TAB INFOS -->
+    <div id="pd-tab-infos" class="active">
+      <div class="table-container">
+        <div id="pd-infos-content"></div>
+      </div>
+    </div>
+
+    <!-- TAB NOTES -->
+    <div id="pd-tab-notes">
+      <!-- Éditeur -->
+      <div class="note-editor">
+        <div class="settings-section-title" style="margin-bottom:var(--space-4);">Nouvelle note / Modifier</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:var(--space-3);margin-bottom:var(--space-3);">
+          <div class="form-group">
+            <label>Date</label>
+            <input class="form-input" type="date" id="note-date">
+          </div>
+          <div class="form-group">
+            <label>Séance liée (optionnel)</label>
+            <select class="form-select" id="note-seance"><option value="">— aucune —</option></select>
+          </div>
+          <div class="form-group">
+            <label>Template</label>
+            <select class="form-select" id="note-template" onchange="applyNoteTemplate()">
+              <option value="libre">Libre</option>
+              <option value="eval_initiale">Évaluation initiale (TCC)</option>
+              <option value="seance_tcc">Séance TCC</option>
+              <option value="seance_act">Séance ACT</option>
+              <option value="bilan">Bilan de fin de suivi</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-group" style="margin-bottom:var(--space-3);">
+          <label>Contenu</label>
+          <textarea class="form-textarea" id="note-contenu" style="min-height:200px;font-family:monospace;font-size:var(--text-sm);"></textarea>
+        </div>
+        <div style="display:flex;gap:var(--space-2);">
+          <button class="btn btn-primary" onclick="saveNote()"><i data-lucide="save"></i> Enregistrer</button>
+          <button class="btn btn-ghost" onclick="resetNoteEditor()">Annuler</button>
+        </div>
+      </div>
+      <!-- Liste notes -->
+      <div id="notes-list"></div>
+    </div>
+
+    <!-- TAB QUESTIONNAIRES -->
+    <div id="pd-tab-questionnaires">
+      <div class="alert alert-info" style="margin-bottom:var(--space-5);">
+        <i data-lucide="info"></i>
+        <div class="clinical-disclaimer" style="margin:0;">Ces outils sont des aides au repérage clinique, non des outils diagnostiques. Leur interprétation s'inscrit dans le cadre d'une évaluation clinique globale.</div>
+      </div>
+
+      <!-- PHQ-9 -->
+      <div class="questionnaire-block" id="qblock-phq9">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:var(--space-3);">
+          <div>
+            <div class="questionnaire-title">PHQ-9 — Dépression</div>
+            <div style="font-size:var(--text-xs);color:var(--color-text-muted);">9 questions · Score 0–27</div>
+          </div>
+          <button class="btn btn-primary btn-sm" onclick="startQuestionnaire('phq9')"><i data-lucide="plus"></i> Nouvelle passation</button>
+        </div>
+        <div class="questionnaire-passation" id="qpassation-phq9"></div>
+        <div class="passations-history" id="qhistory-phq9"></div>
+        <div class="chart-wrap" id="qchart-phq9"></div>
+      </div>
+
+      <!-- GAD-7 -->
+      <div class="questionnaire-block" id="qblock-gad7">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:var(--space-3);">
+          <div>
+            <div class="questionnaire-title">GAD-7 — Anxiété</div>
+            <div style="font-size:var(--text-xs);color:var(--color-text-muted);">7 questions · Score 0–21</div>
+          </div>
+          <button class="btn btn-primary btn-sm" onclick="startQuestionnaire('gad7')"><i data-lucide="plus"></i> Nouvelle passation</button>
+        </div>
+        <div class="questionnaire-passation" id="qpassation-gad7"></div>
+        <div class="passations-history" id="qhistory-gad7"></div>
+        <div class="chart-wrap" id="qchart-gad7"></div>
+      </div>
+    </div>
+
+    <!-- TAB OBJECTIFS -->
+    <div id="pd-tab-objectifs">
+
+      <!-- A. Valeurs -->
+      <div style="margin-bottom:var(--space-6);">
+        <div class="section-header">
+          <h3 class="section-title" style="font-size:var(--text-base);">Valeurs du patient</h3>
+          <button class="btn btn-primary btn-sm" onclick="saveValeurs()"><i data-lucide="save"></i> Enregistrer les valeurs</button>
+        </div>
+        <div class="valeurs-grid" id="valeurs-grid"></div>
+      </div>
+
+      <!-- B. Objectifs -->
+      <div style="margin-bottom:var(--space-6);">
+        <div class="section-header">
+          <h3 class="section-title" style="font-size:var(--text-base);">Objectifs thérapeutiques</h3>
+          <button class="btn btn-primary btn-sm" onclick="openModal('modalNewObjectif')"><i data-lucide="plus"></i> Ajouter un objectif</button>
+        </div>
+        <div id="objectifs-list"></div>
+      </div>
+
+      <!-- C. Engagements -->
+      <div>
+        <div class="section-header">
+          <h3 class="section-title" style="font-size:var(--text-base);">Engagements de séance</h3>
+          <button class="btn btn-primary btn-sm" onclick="addEngagement()"><i data-lucide="plus"></i> Ajouter</button>
+        </div>
+        <div style="display:flex;gap:var(--space-2);margin-bottom:var(--space-4);">
+          <input class="form-input" id="engagement-text" placeholder="Texte de l'engagement…" style="flex:1;">
+        </div>
+        <div id="engagements-list"></div>
+      </div>
+    </div>
+
+  </div><!-- /patient-tab-panels -->
+</section>
+
+<!-- MODAL NOUVEL OBJECTIF -->
+<div class="modal-overlay" id="modalNewObjectif">
+  <div class="modal">
+    <div class="modal-header">
+      <h2 class="modal-title">Nouvel objectif</h2>
+      <button class="icon-btn" onclick="closeModal('modalNewObjectif')"><i data-lucide="x"></i></button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label>Intitulé *</label>
+        <input class="form-input" id="obj-intitule" placeholder="Objectif thérapeutique…">
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Domaine de valeur</label>
+          <select class="form-select" id="obj-domaine">
+            <option value="famille">Famille</option>
+            <option value="relations">Relations</option>
+            <option value="travail">Travail</option>
+            <option value="sante">Santé</option>
+            <option value="loisirs">Loisirs</option>
+            <option value="developpement">Développement personnel</option>
+            <option value="spiritualite">Spiritualité</option>
+            <option value="engagement">Engagement citoyen</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Statut</label>
+          <select class="form-select" id="obj-statut">
+            <option value="en_cours">En cours</option>
+            <option value="atteint">Atteint</option>
+            <option value="abandonne">Abandonné</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-group">
+        <label>Notes de progression</label>
+        <textarea class="form-textarea" id="obj-notes" placeholder="Observations, évolution…"></textarea>
+      </div>
+      <input type="hidden" id="obj-edit-id" value="">
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('modalNewObjectif')">Annuler</button>
+      <button class="btn btn-primary" onclick="saveObjectif()"><i data-lucide="save"></i> Enregistrer</button>
+    </div>
+  </div>
+</div>
+
+<!-- TOAST CONTAINER -->
+<div class="toast-container" id="toasts"></div>
+
+<!-- PRINT CONTAINER (utilisé par @media print) -->
+<div id="print-container"></div>
+
+<script type="module" src="/main.js"></script>
+</body>
+</html>
