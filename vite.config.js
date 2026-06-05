@@ -15,5 +15,12 @@ export default defineConfig({
     target: ['es2021', 'chrome105', 'safari14'],
     minify: !process.env.TAURI_ENV_DEBUG ? 'esbuild' : false,
     sourcemap: !!process.env.TAURI_ENV_DEBUG,
+    // Supprime l'avertissement SOURCEMAP_ERROR pour lucide.min.js (UMD local sans .map)
+    rollupOptions: {
+      onwarn(warning, warn) {
+        if (warning.code === 'SOURCEMAP_ERROR') return;
+        warn(warning);
+      },
+    },
   },
 });
