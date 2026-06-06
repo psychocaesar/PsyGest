@@ -7,6 +7,10 @@ export default defineConfig({
     port: 1420,
     strictPort: true,
     watch: { ignored: ['**/src-tauri/**'] },
+    headers: {
+      // Empêche WebView2 de mettre en cache les assets en dev
+      'Cache-Control': 'no-store',
+    },
   },
   envPrefix: ['VITE_', 'TAURI_'],
   build: {

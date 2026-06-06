@@ -1,7 +1,7 @@
 import { writeTextFile } from '@tauri-apps/plugin-fs';
 import { open as dialogOpen, save as dialogSave, ask } from '@tauri-apps/plugin-dialog';
 import { openUrl } from '@tauri-apps/plugin-opener';
-import { initDb, loadAll, saveAll, migrateFromJSON, exportAllData, importAllData, getAnamnese, saveAnamnese, searchAll, getDocuments, getDocumentsByPatient, getDocument, createDocument, updateDocument, deleteDocument as dbDeleteDocument } from './db.js';
+import { initDb, loadAll, saveAll, saveSettingsOnly, migrateFromJSON, exportAllData, importAllData, getAnamnese, saveAnamnese, searchAll, getDocuments, getDocumentsByPatient, getDocument, createDocument, updateDocument, deleteDocument as dbDeleteDocument, savePwaCode, loadPwaCodes, markPwaCodeImported, createQuestionnaireCode, getQuestionnaireCodesByPatient, updateQuestionnaireCodeStatut, getQuestionnaireCodeByCode, expireQuestionnaireCodesLocally, insertQuestionnaireResultat, getResultatsByPatient, getResultatsByPatientAndSlug, createAlerteQuestionnaire, getAlertesByPatient, getAlertesNonLues, marquerAlertesLues } from './db.js';
 
 // ===== STORAGE CONFIG =====
 let _db = null; // instance SQLite partagée
@@ -19,6 +19,8 @@ const DEFAULT_SETTINGS = {
   dureeConsultation: 50,
   calendlyUrl: '',
   objectifCA: 0,
+  pwaUrl: '',
+  pwaApiKey: '',
 };
 
 // ===== STATE =====
@@ -56,13 +58,19 @@ async function loadState() {
   }
 }
 
+// Mutex pour sérialiser les écritures et éviter SQLITE_BUSY
+let _saveMutex = Promise.resolve();
 async function saveState() {
-  try {
-    await saveAll(_db, state);
-  } catch (e) {
-    console.error('saveState:', e);
-    toast('Erreur lors de la sauvegarde.', 'error');
-  }
+  _saveMutex = _saveMutex.then(async () => {
+    try {
+      if (!_db) { console.warn('saveState: DB non initialisée'); return; }
+      await saveAll(_db, state);
+    } catch (e) {
+      console.error('saveState:', e);
+      toast('Erreur lors de la sauvegarde.', 'error');
+    }
+  });
+  return _saveMutex;
 }
 
 // ===== NAVIGATION =====
@@ -181,7 +189,7 @@ async function savePatient() {
   if (!prenom || !nom) { toast('Prénom et nom requis.', 'error'); return; }
   if (!document.getElementById('p-rgpd').checked) { toast('Consentement RGPD requis.', 'error'); return; }
   state.patients.push({
-    id: Date.now(), prenom, nom,
+    id: String(Date.now()), prenom, nom,
     naissance: document.getElementById('p-naissance').value,
     tel: document.getElementById('p-tel').value,
     email: document.getElementById('p-email').value,
@@ -226,7 +234,7 @@ async function saveFacture() {
     return;
   }
   const facture = {
-    id: Date.now(),
+    id: String(Date.now()),
     numero: formatNum(state.nextFactureNum),
     patientId, date, montant,
     prestation: document.getElementById('f-prestation').value || 'Consultation psychologique',
@@ -503,7 +511,7 @@ async function saveSeance() {
     }
   } else {
     state.seances.push({
-      id: Date.now(), patientId, date, heure,
+      id: String(Date.now()), patientId, date, heure,
       duree: document.getElementById('s-duree').value,
       type: document.getElementById('s-type').value,
       statut, noteInterne: noteSeance, facture: false, note: '',
@@ -521,8 +529,13 @@ async function saveSeance() {
 }
 window.saveSeance = saveSeance;
 
+// Helper centralisé — évite String() coercion répétée partout
+function findSeance(id) {
+  return state.seances.find(s => s.id === String(id));
+}
+
 function openEditSeance(id) {
-  const s = state.seances.find(s => s.id === id);
+  const s = findSeance(id);
   if (!s) return;
   populatePatientSelects();
   document.getElementById('s-edit-id').value = id;
@@ -541,7 +554,7 @@ function openEditSeance(id) {
 window.openEditSeance = openEditSeance;
 
 async function setSeanceStatut(id, statut) {
-  const s = state.seances.find(s => s.id === id);
+  const s = findSeance(id);
   if (!s) return;
   s.statut = statut;
   await saveState();
@@ -567,14 +580,15 @@ function renderSeances() {
     const st = SEANCE_STATUTS[s.statut || 'planifie'] || SEANCE_STATUTS.planifie;
     const statutBadge = `<span class="badge ${st.badge}">${st.label}</span>`;
     // Boutons statut rapide
+    const sid = String(s.id);
     const quickBtns = s.statut !== 'present'
-      ? `<button class="btn btn-ghost btn-sm" onclick="setSeanceStatut(${s.id},'present')" title="Marquer présent" style="color:var(--color-success)"><i data-lucide="user-check"></i></button>`
+      ? `<button class="btn btn-ghost btn-sm" onclick="setSeanceStatut('${sid}','present')" title="Marquer présent" style="color:var(--color-success)"><i data-lucide="user-check"></i></button>`
       : '';
     const absentBtn = s.statut !== 'absent'
-      ? `<button class="btn btn-ghost btn-sm" onclick="setSeanceStatut(${s.id},'absent')" title="Marquer absent" style="color:var(--color-warning)"><i data-lucide="user-x"></i></button>`
+      ? `<button class="btn btn-ghost btn-sm" onclick="setSeanceStatut('${sid}','absent')" title="Marquer absent" style="color:var(--color-warning)"><i data-lucide="user-x"></i></button>`
       : '';
     const annuleBtn = s.statut !== 'annule'
-      ? `<button class="btn btn-ghost btn-sm" onclick="setSeanceStatut(${s.id},'annule')" title="Annuler la séance" style="color:var(--color-error)"><i data-lucide="x-circle"></i></button>`
+      ? `<button class="btn btn-ghost btn-sm" onclick="setSeanceStatut('${sid}','annule')" title="Annuler la séance" style="color:var(--color-error)"><i data-lucide="x-circle"></i></button>`
       : '';
     return `<tr>
       <td>${formatDate(s.date)}</td><td>${s.heure || '—'}</td>
@@ -582,10 +596,10 @@ function renderSeances() {
       <td>${types[s.type] || s.type}</td><td>${s.duree} min</td>
       <td>${statutBadge}</td>
       <td style="white-space:nowrap;">
-        <button class="btn btn-ghost btn-sm" onclick="openEditSeance(${s.id})" title="Modifier"><i data-lucide="pencil"></i></button>
+        <button class="btn btn-ghost btn-sm" onclick="openEditSeance('${sid}')" title="Modifier"><i data-lucide="pencil"></i></button>
         ${quickBtns}${absentBtn}${annuleBtn}
-        ${s.patientId && s.statut !== 'annule' ? `<button class="btn btn-ghost btn-sm" onclick="factureFromSeance(${s.id})" title="Créer facture" style="color:var(--color-primary)"><i data-lucide="file-plus"></i></button>` : ''}
-        <button class="btn btn-ghost btn-sm" onclick="deleteSeance(${s.id})" title="Supprimer" style="color:var(--color-error)"><i data-lucide="trash-2"></i></button>
+        ${s.patientId && s.statut !== 'annule' ? `<button class="btn btn-ghost btn-sm" onclick="factureFromSeance('${sid}')" title="Créer facture" style="color:var(--color-primary)"><i data-lucide="file-plus"></i></button>` : ''}
+        <button class="btn btn-ghost btn-sm" onclick="deleteSeance('${sid}')" title="Supprimer" style="color:var(--color-error)"><i data-lucide="trash-2"></i></button>
       </td>
     </tr>`;
   }).join('');
@@ -593,7 +607,7 @@ function renderSeances() {
 }
 
 async function deleteSeance(id) {
-  state.seances = state.seances.filter(s => s.id !== id);
+  state.seances = state.seances.filter(s => s.id !== String(id));
   await saveState();
   renderAgenda();
   toast('Séance supprimée.');
@@ -601,7 +615,7 @@ async function deleteSeance(id) {
 window.deleteSeance = deleteSeance;
 
 function factureFromSeance(id) {
-  const s = state.seances.find(s => s.id === id);
+  const s = findSeance(id);
   if (!s) return;
   openModal('modalNewFacture');
   setTimeout(() => {
@@ -813,7 +827,7 @@ async function importICSEvents(events) {
     if (!ev.uid && existingSlots.has(slot)) continue;
 
     const seance = {
-      id: Date.now() + Math.random(),
+      id: String(Date.now()),
       patientId: null,
       date: ev.date,
       heure: ev.heure || '00:00',
@@ -845,7 +859,7 @@ async function addCharge() {
   const montant = parseFloat(document.getElementById('charge-montant').value);
   if (!desc || isNaN(montant) || montant <= 0) { toast('Description et montant requis.', 'error'); return; }
   state.charges.push({
-    id: Date.now(), desc, montant,
+    id: String(Date.now()), desc, montant,
     cat: document.getElementById('charge-cat').value,
     date: today(),
   });
@@ -1617,6 +1631,8 @@ function loadSettingsForm() {
   document.getElementById('set-tarif').value = s.tarifConsultation ?? 60;
   document.getElementById('set-duree').value = s.dureeConsultation ?? 50;
   document.getElementById('set-objectif-ca').value = s.objectifCA || '';
+  document.getElementById('set-pwa-url').value = s.pwaUrl || '';
+  document.getElementById('set-pwa-api-key').value = s.pwaApiKey || '';
 }
 
 async function saveSettings() {
@@ -1633,12 +1649,70 @@ async function saveSettings() {
     tarifConsultation: parseFloat(document.getElementById('set-tarif').value) || 60,
     dureeConsultation: parseInt(document.getElementById('set-duree').value) || 50,
     objectifCA: parseFloat(document.getElementById('set-objectif-ca').value) || 0,
+    pwaUrl: document.getElementById('set-pwa-url').value.trim().replace(/\/$/, ''),
+    pwaApiKey: document.getElementById('set-pwa-api-key').value.trim(),
   };
-  await saveState();
-  refreshSidebarCounts();
-  toast('Réglages enregistrés ✓');
+  try {
+    await saveSettingsOnly(_db, state.settings, state.nextFactureNum);
+    refreshSidebarCounts();
+    toast('Réglages enregistrés ✓');
+  } catch (e) {
+    console.error('saveSettings:', e);
+    toast('Erreur lors de la sauvegarde des réglages.', 'error');
+  }
 }
 window.saveSettings = saveSettings;
+
+function toggleApiKeyVisibility() {
+  const input = document.getElementById('set-pwa-api-key');
+  const icon = document.getElementById('api-key-eye-icon');
+  if (input.type === 'password') {
+    input.type = 'text';
+    icon.setAttribute('data-lucide', 'eye-off');
+  } else {
+    input.type = 'password';
+    icon.setAttribute('data-lucide', 'eye');
+  }
+  lucide.createIcons();
+}
+window.toggleApiKeyVisibility = toggleApiKeyVisibility;
+
+async function testerConnexionPi() {
+  const statusEl = document.getElementById('pi-ping-status');
+  const url = normalizeUrl(document.getElementById('set-pwa-url').value);
+  const key = document.getElementById('set-pwa-api-key').value.trim();
+  if (!url || !key) {
+    statusEl.textContent = '⚠️ URL et clé API requises.';
+    return;
+  }
+  statusEl.textContent = 'Test en cours…';
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 10000);
+    const res = await fetch(`${url}/api/resultats`, {
+      headers: { 'x-api-key': key },
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+    if (res.ok) {
+      statusEl.innerHTML = '<span style="color:var(--color-success)">✅ Pi accessible</span>';
+    } else if (res.status === 401 || res.status === 403) {
+      statusEl.innerHTML = `<span style="color:var(--color-error)">❌ Clé API invalide — vérifiez la clé dans les réglages</span>`;
+    } else {
+      statusEl.innerHTML = `<span style="color:var(--color-error)">❌ Erreur HTTP ${res.status} — vérifiez l'URL</span>`;
+    }
+  } catch (e) {
+    console.error('testerConnexionPi error:', e.name, e.message);
+    if (e.name === 'AbortError') {
+      statusEl.innerHTML = `<span style="color:var(--color-error)">❌ Délai dépassé (10s) — Pi injoignable ou réseau lent</span>`;
+    } else if (e.message && e.message.includes('SSL') || e.message && e.message.includes('certificate')) {
+      statusEl.innerHTML = `<span style="color:var(--color-error)">❌ Erreur SSL/TLS — certificat invalide ?</span>`;
+    } else {
+      statusEl.innerHTML = `<span style="color:var(--color-error)">❌ Pi inaccessible — ${e.message || e.name}</span>`;
+    }
+  }
+}
+window.testerConnexionPi = testerConnexionPi;
 
 // ===== EXPORT / IMPORT =====
 async function exportData() {
@@ -1739,9 +1813,10 @@ function refreshSidebarCounts() {
 let _currentPatientId = null;
 
 function openPatient(id) {
-  const p = state.patients.find(p => p.id === id);
+  const sid = String(id);
+  const p = state.patients.find(p => String(p.id) === sid);
   if (!p) return;
-  _currentPatientId = id;
+  _currentPatientId = sid;
   // Ensure clinical sub-objects exist
   if (!p.notes) p.notes = [];
   if (!p.questionnaires) p.questionnaires = [];
@@ -1812,68 +1887,30 @@ async function renderPatientDashboard(id) {
     ((p.notes || []).length > 0 && daysSinceNote > 21) ? `<span class="badge badge-warning" style="font-size:11px;">🟡 Pas de note &gt; 21j</span>` : '',
   ].filter(Boolean).join('');
 
-  // Questionnaire chart data
-  const phq9Data = (p.questionnaires || []).filter(q => q.type === 'phq9').sort((a, b) => a.date.localeCompare(b.date));
-  const gad7Data = (p.questionnaires || []).filter(q => q.type === 'gad7').sort((a, b) => a.date.localeCompare(b.date));
-  const hasScores = phq9Data.length > 0 || gad7Data.length > 0;
-
-  const dualChart = hasScores ? buildDualScoreChart(phq9Data, gad7Data) : '<div style="color:var(--color-text-muted);font-size:var(--text-sm);text-align:center;padding:var(--space-6) 0;">Aucune donnée</div>';
-
-  // Activité récente
-  const lastObj = (p.objectifs?.objectifs || []).slice().sort((a, b) => b.dateCreation.localeCompare(a.dateCreation))[0] || null;
-  const lastNoteHTML = lastNote
-    ? `<div class="pd-activity-label">Dernière note</div><div>${formatDate(lastNote.date)} · <span class="badge badge-primary" style="font-size:10px;">${NOTE_TEMPLATE_LABELS[lastNote.template] || lastNote.template}</span><br><span style="color:var(--color-text-muted);">${(lastNote.contenu || '').replace(/^#+\s*/gm, '').trim().slice(0, 60)}${(lastNote.contenu || '').length > 60 ? '…' : ''}</span></div>`
-    : `<div class="pd-activity-label">Dernière note</div><div style="color:var(--color-text-faint);">—</div>`;
-  const lastObjHTML = lastObj
-    ? `<div class="pd-activity-label">Dernier objectif</div><div>${lastObj.intitule} <span class="badge badge-muted" style="font-size:10px;">${STATUT_LABELS[lastObj.statut] || lastObj.statut}</span></div>`
-    : `<div class="pd-activity-label">Dernier objectif</div><div style="color:var(--color-text-faint);">—</div>`;
-
   const clotureLabel = p.cloture ? 'Réouvrir' : 'Clôturer';
   const clotureBadge = p.cloture ? `<span class="badge badge-muted"><i data-lucide="archive" style="width:12px;height:12px;"></i> Dossier clôturé</span>` : '';
 
   container.innerHTML = `
-    <div class="pd-top-actions">
+    <div class="pd-header-bar">
       <div class="pd-identity">
-        <div class="patient-avatar" style="width:44px;height:44px;font-size:var(--text-base);">${getInitials(p.prenom, p.nom)}</div>
-        <div>
-          <div style="font-family:var(--font-display);font-size:var(--text-lg);font-weight:600;">${p.prenom} ${p.nom}</div>
+        <div class="patient-avatar" style="width:40px;height:40px;font-size:var(--text-sm);flex-shrink:0;">${getInitials(p.prenom, p.nom)}</div>
+        <div style="min-width:0;">
+          <div style="font-family:var(--font-display);font-size:var(--text-lg);font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${p.prenom} ${p.nom} ${clotureBadge}</div>
           <div style="font-size:var(--text-xs);color:var(--color-text-muted);">${age}${p.naissance ? ' · né(e) le ' + formatDate(p.naissance) : ''}${p.tel ? ' · ' + p.tel : ''}${p.email ? ' · ' + p.email : ''}</div>
         </div>
-        ${clotureBadge}
       </div>
-      <div style="display:flex;gap:var(--space-2);flex-wrap:wrap;">
+      <div class="pd-header-stats">
+        <div class="pd-stat"><span class="pd-stat-val">${totalSeances}</span><span class="pd-stat-lbl">séances</span></div>
+        <div class="pd-stat"><span class="pd-stat-val">${firstSeance}</span><span class="pd-stat-lbl">1ère séance</span></div>
+        <div class="pd-stat"><span class="pd-stat-val" style="${unpaidCount > 0 ? 'color:var(--color-error)' : ''}">${unpaidCount}</span><span class="pd-stat-lbl">impayée${unpaidCount > 1 ? 's' : ''}</span></div>
+        ${alertsHTML ? `<div class="pd-stat">${alertsHTML}</div>` : ''}
+      </div>
+      <div class="pd-header-actions">
+        <button class="btn btn-primary btn-sm" onclick="openNewSeanceForPatient('${id}')"><i data-lucide="plus"></i> Séance</button>
+        <button class="btn btn-ghost btn-sm" onclick="exportDossierPDF()"><i data-lucide="file-down"></i></button>
+        <button class="btn btn-ghost btn-sm" onclick="toggleClotureDossier()" title="${clotureLabel}"><i data-lucide="archive"></i></button>
         <button class="btn btn-ghost btn-sm" onclick="navigate('patients')"><i data-lucide="arrow-left"></i> Retour</button>
-        <button class="btn btn-secondary btn-sm" onclick="exportDossierPDF()"><i data-lucide="file-down"></i> Export PDF</button>
-        <button class="btn btn-secondary btn-sm" onclick="toggleClotureDossier()"><i data-lucide="archive"></i> ${clotureLabel}</button>
-        <button class="btn btn-danger btn-sm" onclick="deleteCurrentPatient()"><i data-lucide="trash-2"></i> Supprimer</button>
-      </div>
-    </div>
-    <div class="pd-dashboard-grid">
-      <div class="pd-block">
-        <div class="pd-block-title">Résumé</div>
-        <div class="pd-kpi-grid">
-          <div class="pd-kpi-item"><div class="pd-kpi-label">Séances totales</div><div class="pd-kpi-value">${totalSeances}</div></div>
-          <div class="pd-kpi-item"><div class="pd-kpi-label">Première séance</div><div class="pd-kpi-value" style="font-size:var(--text-xs);">${firstSeance}</div></div>
-          <div class="pd-kpi-item"><div class="pd-kpi-label">Prochaine séance</div><div class="pd-kpi-value" style="font-size:var(--text-xs);">${nextSeance}</div></div>
-          <div class="pd-kpi-item"><div class="pd-kpi-label">Factures impayées</div><div class="pd-kpi-value" style="${unpaidCount > 0 ? 'color:var(--color-error);' : ''}">${unpaidCount}</div></div>
-        </div>
-        ${alertsHTML ? `<div class="pd-alerts">${alertsHTML}</div>` : ''}
-      </div>
-      <div class="pd-block">
-        <div class="pd-block-title">Évolution des scores</div>
-        ${dualChart}
-      </div>
-      <div class="pd-block">
-        <div class="pd-block-title">Activité récente</div>
-        <div class="pd-activity-item">${lastNoteHTML}</div>
-        <div class="pd-activity-item">${lastObjHTML}</div>
-        <div class="pd-block-title" style="margin-top:var(--space-3);">Actions rapides</div>
-        <div class="pd-quick-actions">
-          <button class="btn btn-primary btn-sm" onclick="openNewSeanceForPatient(${id})"><i data-lucide="plus"></i> Séance</button>
-          <button class="btn btn-secondary btn-sm" onclick="switchPatientTab('notes')"><i data-lucide="file-text"></i> Note</button>
-          <button class="btn btn-secondary btn-sm" onclick="switchPatientTab('questionnaires')"><i data-lucide="clipboard-list"></i> Questionnaire</button>
-          <button class="btn btn-secondary btn-sm" onclick="openNewFactureForPatient(${id})"><i data-lucide="file-plus"></i> Facture</button>
-        </div>
+        <button class="btn btn-danger btn-sm" onclick="deleteCurrentPatient()"><i data-lucide="trash-2"></i></button>
       </div>
     </div>`;
   lucide.createIcons();
@@ -2058,7 +2095,7 @@ function switchPatientTab(tab) {
   });
   if (tab === 'anamnes') renderAnamneseTab();
   if (tab === 'notes') renderNotes();
-  if (tab === 'questionnaires') renderQuestionnaires();
+  if (tab === 'questionnaires') { renderQuestionnaires(); renderOngletQuestionnaires(); }
   if (tab === 'objectifs') renderObjectifs();
   if (tab === 'documents') renderPatientDocuments(_currentPatientId);
 }
@@ -2087,7 +2124,7 @@ function renderPatients(filter = '') {
     const lastSeanceDate = patSeances.map(s => s.date).sort().reverse()[0] || null;
     const daysSinceSeance = lastSeanceDate ? Math.floor((now_ - new Date(lastSeanceDate + 'T12:00:00').getTime()) / 86400000) : 999;
     const unpaidOld = state.factures.filter(f => f.patientId === p.id && f.statut === 'en_attente' && Math.floor((now_ - new Date(f.date + 'T12:00:00').getTime()) / 86400000) > 30);
-    return `<div class="patient-card${p.cloture ? ' patient-card-cloture' : ''}" onclick="openPatient(${p.id})">
+    return `<div class="patient-card${p.cloture ? ' patient-card-cloture' : ''}" onclick="openPatient('${p.id}')">
       <div class="patient-card-header">
         <div class="patient-avatar">${getInitials(p.prenom, p.nom)}</div>
         <div style="flex:1;">
@@ -2206,7 +2243,7 @@ async function saveNote() {
     }
   } else {
     p.notes.push({
-      id: Date.now(),
+      id: String(Date.now()),
       date, contenu,
       seanceId: document.getElementById('note-seance').value || null,
       template: document.getElementById('note-template').value,
@@ -2330,7 +2367,7 @@ async function submitQuestionnaire(type) {
   const score = reponses.reduce((s, v) => s + v, 0);
   const interp = type === 'phq9' ? phq9Interpretation(score) : gad7Interpretation(score);
   p.questionnaires.push({
-    id: Date.now(), type, date: today(), reponses, score, interpretation: interp.label,
+    id: String(Date.now()), type, date: today(), reponses, score, interpretation: interp.label,
   });
   await saveState();
   document.getElementById(`qpassation-${type}`).classList.remove('active');
@@ -2532,7 +2569,7 @@ async function saveObjectif() {
   } else {
     if (!p.objectifs.objectifs) p.objectifs.objectifs = [];
     p.objectifs.objectifs.push({
-      id: Date.now(), intitule,
+      id: String(Date.now()), intitule,
       domaine: document.getElementById('obj-domaine').value,
       statut: document.getElementById('obj-statut').value,
       notes: document.getElementById('obj-notes').value.trim(),
@@ -2580,7 +2617,7 @@ async function addEngagement() {
   if (!p.objectifs.engagements) p.objectifs.engagements = [];
   const texte = document.getElementById('engagement-text').value.trim();
   if (!texte) { toast('Texte de l\'engagement requis.', 'error'); return; }
-  p.objectifs.engagements.push({ id: Date.now(), texte, date: today(), realise: false });
+  p.objectifs.engagements.push({ id: String(Date.now()), texte, date: today(), realise: false });
   await saveState();
   document.getElementById('engagement-text').value = '';
   renderObjectifs();
@@ -2898,7 +2935,7 @@ function renderSearchResults(data, query) {
   if (patients.length) {
     html += `<div class="search-result-group">Patients</div>`;
     html += patients.map(p => `
-      <div class="search-result-item" onclick="openPatient(${p.id});hideSearchResults();document.getElementById('global-search').value='';">
+      <div class="search-result-item" onclick="openPatient('${p.id}');hideSearchResults();document.getElementById('global-search').value='';">
         <div class="search-result-main">${highlight(p.prenom + ' ' + p.nom, query)}</div>
       </div>`).join('');
   }
@@ -2908,7 +2945,7 @@ function renderSearchResults(data, query) {
     html += notes.map(n => {
       const patient = state.patients.find(pp => pp.id == n.patient_id);
       const preview = (n.contenu || '').replace(/^#+\s*/gm, '').trim().slice(0, 80);
-      return `<div class="search-result-item" onclick="openPatient(${n.patient_id});switchPatientTab('notes');hideSearchResults();document.getElementById('global-search').value='';">
+      return `<div class="search-result-item" onclick="openPatient('${n.patient_id}');switchPatientTab('notes');hideSearchResults();document.getElementById('global-search').value='';">
         <div class="search-result-main">${formatDate(n.date)} · ${patient ? patient.prenom + ' ' + patient.nom : '—'}</div>
         <div class="search-result-sub">${highlight(preview, query)}</div>
       </div>`;
@@ -2919,7 +2956,7 @@ function renderSearchResults(data, query) {
     html += `<div class="search-result-group">Factures</div>`;
     html += factures.map(f => {
       const patient = state.patients.find(pp => pp.id == f.patient_id);
-      return `<div class="search-result-item" onclick="openPatient(${f.patient_id});switchPatientTab('infos');hideSearchResults();document.getElementById('global-search').value='';">
+      return `<div class="search-result-item" onclick="openPatient('${f.patient_id}');switchPatientTab('infos');hideSearchResults();document.getElementById('global-search').value='';">
         <div class="search-result-main">${highlight(f.numero, query)}</div>
         <div class="search-result-sub">${patient ? patient.prenom + ' ' + patient.nom : '—'} · ${formatDate(f.date)} · ${formatAmount(f.montant)}</div>
       </div>`;
@@ -3848,6 +3885,487 @@ async function renderPatientDocuments(patientId) {
     container.innerHTML = `<div style="color:var(--color-text-muted);padding:var(--space-4);">Erreur lors du chargement.</div>`;
   }
 }
+
+// ===== Pi — Questionnaires à distance =====
+
+// ── Méta questionnaires ────────────────────────────────────────────────────────
+const QUESTIONNAIRE_META = {
+  phq9:   { label: 'PHQ-9',    titre: 'Dépression',              scoreMax: 27,  seuilAlerte: 5  },
+  gad7:   { label: 'GAD-7',    titre: 'Anxiété généralisée',     scoreMax: 21,  seuilAlerte: 5  },
+  isi:    { label: 'ISI',      titre: 'Insomnie',                scoreMax: 28,  seuilAlerte: 4  },
+  pcl5:   { label: 'PCL-5',    titre: 'Stress post-traumatique', scoreMax: 80,  seuilAlerte: 10 },
+  aaq2:   { label: 'AAQ-II',   titre: 'Flexibilité psychologique',scoreMax: 49, seuilAlerte: 5  },
+  cfq:    { label: 'CFQ',      titre: 'Fusion cognitive',        scoreMax: 49,  seuilAlerte: 5  },
+  qips:   { label: 'QIPS',     titre: 'Pleine conscience',       scoreMax: 39,  seuilAlerte: 8  },
+  iesr:   { label: 'IES-R',    titre: 'Impact événement',        scoreMax: 88,  seuilAlerte: 8  },
+  audit:  { label: 'AUDIT',    titre: 'Alcool',                  scoreMax: 40,  seuilAlerte: 4  },
+  dast10: { label: 'DAST-10',  titre: 'Drogues',                 scoreMax: 10,  seuilAlerte: 2  },
+  had:    { label: 'HAD',      titre: 'Anxiété & Dépression',    scoreMax: 42,  seuilAlerte: 3, sousScoress: ['anxiete','depression'] },
+  lsas:   { label: 'LSAS',     titre: 'Phobie sociale',          scoreMax: 144, seuilAlerte: 10 },
+  bdi2:   { label: 'BDI-II',   titre: 'Dépression (Beck)',       scoreMax: 63,  seuilAlerte: 5  },
+  rathus: { label: 'Rathus',   titre: 'Assertivité',             scoreMax: 90,  seuilAlerte: -10, inverseAlerte: true },
+};
+
+// ── Helpers ────────────────────────────────────────────────────────────────────
+
+function normalizeUrl(raw) {
+  const s = (raw || '').trim().replace(/\/$/, '');
+  if (!s) return '';
+  if (/^http:\/\//i.test(s)) return s.replace(/^http:\/\//i, 'https://');
+  return /^https:\/\//i.test(s) ? s : `https://${s}`;
+}
+
+function piRequest(path, options = {}) {
+  const url = normalizeUrl(state.settings.pwaUrl);
+  const key = (state.settings.pwaApiKey || '').trim();
+  if (!url || !key) throw new Error('URL et clé API non configurées dans les Réglages (section Connexion Pi).');
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 10000);
+  return fetch(`${url}${path}`, {
+    ...options,
+    headers: { 'Content-Type': 'application/json', 'x-api-key': key, ...(options.headers || {}) },
+    signal: controller.signal,
+  }).then(async res => {
+    clearTimeout(timer);
+    const text = await res.text();
+    let data;
+    try { data = JSON.parse(text); } catch (_) {
+      throw new Error(`Le Pi a renvoyé une réponse non-JSON (HTTP ${res.status}). Vérifiez l'URL et la clé API.`);
+    }
+    if (!res.ok) throw new Error(data.erreur || data.error || `Erreur HTTP ${res.status}`);
+    return data;
+  }).catch(e => {
+    clearTimeout(timer);
+    if (e.name === 'AbortError') throw new Error('Pi inaccessible — délai dépassé (10s). Vérifiez que vous êtes sur le réseau cabinet ou connecté à Tailscale.');
+    throw e;
+  });
+}
+
+function genererCodeLocal(slug) {
+  const chiffres = String(Math.floor(Math.random() * 10000)).padStart(4, '0');
+  const lettres = Array.from({ length: 2 }, () => 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'[Math.floor(Math.random() * 26)]).join('');
+  return `${slug.toUpperCase()}-${chiffres}-${lettres}`;
+}
+
+function copierPresse(texte) {
+  navigator.clipboard.writeText(texte).then(() => toast('Copié ✓'));
+}
+window.copierPresse = copierPresse;
+
+// ── Génération de code ─────────────────────────────────────────────────────────
+
+async function genererCode() {
+  const p = state.patients.find(p => p.id === _currentPatientId);
+  if (!p) return;
+
+  const slug = document.getElementById('qi-slug').value;
+  const jours = parseInt(document.getElementById('qi-duree').value) || 7;
+  if (!slug) { toast('Choisissez un questionnaire.', 'error'); return; }
+
+  const meta = QUESTIONNAIRE_META[slug];
+  if (!meta) { toast('Questionnaire inconnu.', 'error'); return; }
+
+  const now = new Date();
+  const dateCreation = now.toISOString();
+  let code, dateExpiration, synchro;
+
+  try {
+    // Le Pi génère le code et le stocke lui-même
+    const res = await piRequest('/api/codes', {
+      method: 'POST',
+      body: JSON.stringify({ questionnaire: slug.toUpperCase(), ttl_heures: jours * 24 }),
+    });
+    code = res.code;
+    // expires_at est un timestamp Unix sur le Pi
+    dateExpiration = res.expires_at
+      ? new Date(res.expires_at * 1000).toISOString()
+      : new Date(now.getTime() + jours * 86400000).toISOString();
+    synchro = true;
+  } catch (e) {
+    // Fallback : code local si Pi inaccessible
+    code = genererCodeLocal(slug);
+    dateExpiration = new Date(now.getTime() + jours * 86400000).toISOString();
+    synchro = false;
+  }
+
+  await createQuestionnaireCode(_db, {
+    patientId: String(p.id),
+    code,
+    slug,
+    dateCreation,
+    dateExpiration,
+    statut: synchro ? 'en_attente' : 'non_synchronisé',
+  });
+
+  if (!synchro) {
+    toast('Pi inaccessible — code créé localement, à synchroniser plus tard.', 'error');
+  }
+
+  await renderOngletQuestionnaires();
+
+  const pwaUrl = (state.settings.pwaUrl || '').trim();
+  const lien = `${pwaUrl}?code=${code}`;
+  const expStr = expiration.toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric' });
+
+  document.getElementById('qi-result').innerHTML = `
+    <div class="code-result-box">
+      <div class="code-result-badge">${code}</div>
+      <div style="font-size:var(--text-sm);color:var(--color-text-muted);margin:var(--space-2) 0;">
+        ${synchro ? '✅ Transmis au Pi' : '⚠️ Non synchronisé avec le Pi'} · Expire le ${expStr}
+      </div>
+      <div style="font-size:var(--text-xs);color:var(--color-text-muted);margin-bottom:var(--space-3);word-break:break-all;">${lien}</div>
+      <div style="display:flex;gap:var(--space-2);flex-wrap:wrap;">
+        <button class="btn btn-primary btn-sm" onclick="copierPresse('${lien}')"><i data-lucide="link"></i> Copier le lien</button>
+        <button class="btn btn-secondary btn-sm" onclick="copierPresse('${code}')"><i data-lucide="copy"></i> Copier le code</button>
+        ${!synchro ? `<button class="btn btn-ghost btn-sm" onclick="reessayerSynchroCode('${code}')"><i data-lucide="refresh-cw"></i> Réessayer</button>` : ''}
+      </div>
+    </div>`;
+  lucide.createIcons();
+}
+window.genererCode = genererCode;
+
+async function reessayerSynchroCode(code) {
+  const row = await getQuestionnaireCodeByCode(_db, code);
+  if (!row) return;
+  try {
+    await piRequest('/api/codes', {
+      method: 'POST',
+      body: JSON.stringify({ code: row.code, questionnaire_slug: row.questionnaire_slug, expires_at: row.date_expiration }),
+    });
+    await updateQuestionnaireCodeStatut(_db, code, 'en_attente');
+    toast('Code synchronisé avec le Pi ✓');
+    await renderOngletQuestionnaires();
+  } catch (e) {
+    toast(`Échec : ${e.message}`, 'error');
+  }
+}
+window.reessayerSynchroCode = reessayerSynchroCode;
+
+// ── Onglet Questionnaires — rendu complet ─────────────────────────────────────
+
+async function renderOngletQuestionnaires() {
+  const p = state.patients.find(p => p.id === _currentPatientId);
+  if (!p) return;
+
+  // Mettre à jour statuts expirés localement (sans appel réseau)
+  await expireQuestionnaireCodesLocally(_db);
+
+  const codes = await getQuestionnaireCodesByPatient(_db, String(p.id));
+  const resultats = await getResultatsByPatient(_db, String(p.id));
+  const alertes = await getAlertesByPatient(_db, String(p.id));
+
+  const alertesNonLues = alertes.filter(a => !a.lu);
+  const tabBtn = document.querySelector('#pd-tabs .tab-btn[onclick*="questionnaires"]');
+  if (tabBtn) {
+    const badge = tabBtn.querySelector('.alert-badge-tab');
+    if (alertesNonLues.length) {
+      if (!badge) tabBtn.insertAdjacentHTML('beforeend', `<span class="alert-badge-tab badge badge-error" style="margin-left:4px;font-size:10px;">${alertesNonLues.length}</span>`);
+      else badge.textContent = alertesNonLues.length;
+    } else if (badge) badge.remove();
+  }
+
+  const el = document.getElementById('qi-remote-section');
+  if (!el) return;
+
+  const statutBadge = s => ({
+    'en_attente':      '<span class="badge badge-warning">🟡 En attente</span>',
+    'complété':        '<span class="badge badge-success">✅ Complété</span>',
+    'expiré':          '<span class="badge badge-error">🔴 Expiré</span>',
+    'non_synchronisé': '<span class="badge badge-muted">⚠️ Non synchronisé</span>',
+  }[s] || `<span class="badge">${s}</span>`);
+
+  const tableauCodes = codes.length ? `
+    <table>
+      <thead><tr><th>Questionnaire</th><th>Code</th><th>Envoyé le</th><th>Expire le</th><th>Statut</th><th></th></tr></thead>
+      <tbody>
+        ${codes.map(c => {
+          const meta = QUESTIONNAIRE_META[c.questionnaire_slug] || {};
+          const action = c.statut === 'non_synchronisé'
+            ? `<button class="btn btn-ghost btn-sm" onclick="reessayerSynchroCode('${c.code}')"><i data-lucide="refresh-cw"></i></button>`
+            : '';
+          return `<tr>
+            <td>${meta.label || c.questionnaire_slug} — ${meta.titre || ''}</td>
+            <td><code>${c.code}</code></td>
+            <td>${formatDate(c.date_creation.slice(0,10))}</td>
+            <td>${formatDate(c.date_expiration.slice(0,10))}</td>
+            <td>${statutBadge(c.statut)}</td>
+            <td>${action}</td>
+          </tr>`;
+        }).join('')}
+      </tbody>
+    </table>` : `<p style="color:var(--color-text-muted);font-size:var(--text-sm);">Aucun code généré pour ce patient.</p>`;
+
+  // Alertes actives
+  const alertesHtml = alertes.length ? `
+    <div style="margin-bottom:var(--space-4);">
+      ${alertes.filter(a => !a.lu).map(a => `
+        <div class="alert alert-error" style="margin-bottom:var(--space-2);">
+          <i data-lucide="alert-triangle"></i>
+          <div>${a.message}</div>
+        </div>`).join('')}
+    </div>` : '';
+
+  // Graphiques & tableaux évolution par slug
+  const slugsAvecResultats = [...new Set(resultats.map(r => r.questionnaire_slug))];
+  const evolutionHtml = slugsAvecResultats.map(slug => renderEvolutionSlug(slug, resultats.filter(r => r.questionnaire_slug === slug))).join('');
+
+  el.innerHTML = `
+    <div class="alert alert-info" style="margin-bottom:var(--space-4);">
+      <i data-lucide="info"></i>
+      <div class="clinical-disclaimer" style="margin:0;">Ces outils sont des aides au repérage clinique, non des outils diagnostiques.</div>
+    </div>
+
+    ${alertesHtml}
+
+    <!-- Génération de code -->
+    <div class="card" style="margin-bottom:var(--space-5);">
+      <div class="section-header" style="margin-bottom:var(--space-3);">
+        <h3 class="section-title" style="font-size:var(--text-base);">Envoyer un questionnaire à distance</h3>
+        <button class="btn btn-secondary btn-sm" onclick="synchroniserResultats()"><i data-lucide="refresh-cw"></i> Synchroniser avec le Pi</button>
+      </div>
+      <div style="display:flex;gap:var(--space-3);flex-wrap:wrap;align-items:flex-end;margin-bottom:var(--space-3);">
+        <div class="form-group" style="margin:0;min-width:220px;">
+          <label style="font-size:var(--text-xs);">Questionnaire</label>
+          <select class="form-select" id="qi-slug">
+            <option value="">— choisir —</option>
+            ${Object.entries(QUESTIONNAIRE_META).map(([k,v]) => `<option value="${k}">${v.label} — ${v.titre}</option>`).join('')}
+          </select>
+        </div>
+        <div class="form-group" style="margin:0;">
+          <label style="font-size:var(--text-xs);">Validité</label>
+          <select class="form-select" id="qi-duree">
+            <option value="3">3 jours</option>
+            <option value="7" selected>7 jours</option>
+            <option value="14">14 jours</option>
+            <option value="30">30 jours</option>
+          </select>
+        </div>
+        <button class="btn btn-primary" onclick="genererCode()"><i data-lucide="key"></i> Générer le code</button>
+      </div>
+      <div id="qi-result"></div>
+    </div>
+
+    <!-- Tableau des codes -->
+    <div style="margin-bottom:var(--space-6);">
+      <h3 class="section-title" style="font-size:var(--text-base);margin-bottom:var(--space-3);">Historique des codes envoyés</h3>
+      <div class="table-container">${tableauCodes}</div>
+    </div>
+
+    <!-- Évolution -->
+    ${evolutionHtml ? `<div>
+      <h3 class="section-title" style="font-size:var(--text-base);margin-bottom:var(--space-3);">Évolution des scores</h3>
+      ${evolutionHtml}
+    </div>` : ''}
+  `;
+  lucide.createIcons();
+}
+window.renderOngletQuestionnaires = renderOngletQuestionnaires;
+
+// ── Vue évolution par questionnaire ───────────────────────────────────────────
+
+function renderEvolutionSlug(slug, resultats) {
+  const meta = QUESTIONNAIRE_META[slug] || { label: slug, scoreMax: 100, seuilAlerte: null };
+  if (resultats.length < 1) return '';
+
+  const sorted = [...resultats].sort((a, b) => a.date_passation.localeCompare(b.date_passation));
+
+  // Graphique SVG
+  const W = 500, H = 160, PAD = { t: 16, r: 20, b: 32, l: 40 };
+  const innerW = W - PAD.l - PAD.r;
+  const innerH = H - PAD.t - PAD.b;
+  const scoreMax = meta.scoreMax;
+
+  const xStep = sorted.length > 1 ? innerW / (sorted.length - 1) : innerW / 2;
+  const yScale = v => innerH - (v / scoreMax) * innerH;
+
+  const points = sorted.map((r, i) => ({
+    x: PAD.l + (sorted.length > 1 ? i * xStep : innerW / 2),
+    y: PAD.t + yScale(r.score_total ?? 0),
+    score: r.score_total,
+    date: r.date_passation.slice(0, 10),
+    interp: r.interpretation || '',
+  }));
+
+  const polyline = points.map(p => `${p.x},${p.y}`).join(' ');
+
+  // Seuil clinique
+  const seuilY = meta.seuilAlerte ? PAD.t + yScale(meta.seuilAlerte) : null;
+  const seuilLine = seuilY ? `<line x1="${PAD.l}" y1="${seuilY}" x2="${W - PAD.r}" y2="${seuilY}" stroke="var(--color-warning)" stroke-width="1" stroke-dasharray="4,3" opacity="0.7"/>` : '';
+
+  const circles = points.map(p => `
+    <circle cx="${p.x}" cy="${p.y}" r="5" fill="var(--color-primary)" stroke="white" stroke-width="2">
+      <title>${p.date} — Score ${p.score} — ${p.interp}</title>
+    </circle>`).join('');
+
+  const xLabels = points.map(p => `<text x="${p.x}" y="${H - 6}" text-anchor="middle" font-size="10" fill="var(--color-text-muted)">${p.date.slice(5)}</text>`).join('');
+  const yLabels = [0, Math.round(scoreMax / 2), scoreMax].map(v => `<text x="${PAD.l - 6}" y="${PAD.t + yScale(v) + 4}" text-anchor="end" font-size="10" fill="var(--color-text-muted)">${v}</text>`).join('');
+
+  const svg = `<svg viewBox="0 0 ${W} ${H}" style="width:100%;max-width:${W}px;display:block;overflow:visible;">
+    ${seuilLine}
+    <polyline points="${polyline}" fill="none" stroke="var(--color-primary)" stroke-width="2"/>
+    ${circles}
+    ${xLabels}
+    ${yLabels}
+  </svg>`;
+
+  // Tableau récapitulatif avec delta
+  const lignes = sorted.map((r, i) => {
+    const prev = i > 0 ? sorted[i - 1] : null;
+    let deltaHtml = '—';
+    if (prev && r.score_total !== null && prev.score_total !== null) {
+      const delta = r.score_total - prev.score_total;
+      const seuil = meta.seuilAlerte ?? 5;
+      const color = delta > seuil ? 'var(--color-error)' : delta < -seuil ? 'var(--color-success)' : 'var(--color-text-muted)';
+      const arrow = delta > 0 ? '↑' : delta < 0 ? '↓' : '→';
+      deltaHtml = `<span style="color:${color};font-weight:600;">${arrow} ${delta > 0 ? '+' : ''}${delta}</span>`;
+    }
+    return `<tr>
+      <td>${formatDate(r.date_passation.slice(0,10))}</td>
+      <td><strong>${r.score_total ?? '—'}</strong></td>
+      <td style="font-size:var(--text-xs);">${r.interpretation || '—'}</td>
+      <td>${deltaHtml}</td>
+    </tr>`;
+  }).join('');
+
+  return `<div class="questionnaire-block" style="margin-bottom:var(--space-5);">
+    <div class="questionnaire-title">${meta.label} — ${meta.titre}</div>
+    <div style="margin:var(--space-3) 0;">${svg}</div>
+    <div class="table-container">
+      <table>
+        <thead><tr><th>Date</th><th>Score</th><th>Interprétation</th><th>Évolution</th></tr></thead>
+        <tbody>${lignes}</tbody>
+      </table>
+    </div>
+  </div>`;
+}
+
+// ── Synchronisation des résultats ─────────────────────────────────────────────
+
+async function synchroniserResultats() {
+  const btn = document.querySelector('[onclick="synchroniserResultats()"]');
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i data-lucide="loader"></i> Synchronisation…'; lucide.createIcons(); }
+
+  try {
+    const derniereSynchro = state.settings._derniereSynchro || '';
+    const path = derniereSynchro ? `/api/resultats?since=${encodeURIComponent(derniereSynchro)}` : '/api/resultats';
+    const resultats = await piRequest(path);
+
+    if (!resultats.length) {
+      toast('Aucun nouveau résultat sur le Pi.');
+      return;
+    }
+
+    const now = new Date().toISOString();
+    let importes = 0;
+
+    for (const r of resultats) {
+      const codeRow = await getQuestionnaireCodeByCode(_db, r.code);
+      if (!codeRow) continue;
+
+      const detailsJson = r.details ? JSON.stringify(r.details) : null;
+
+      await insertQuestionnaireResultat(_db, {
+        patientId: codeRow.patient_id,
+        slug: r.questionnaire_slug,
+        code: r.code,
+        datePassation: r.date_passation,
+        scoreTotal: r.score_total ?? null,
+        interpretation: r.interpretation || null,
+        detailsJson,
+        synchroDate: now,
+      });
+
+      await updateQuestionnaireCodeStatut(_db, r.code, 'complété', r.date_passation);
+
+      // Alertes de détérioration
+      await verifierAlertes(_db, codeRow.patient_id, r);
+
+      importes++;
+    }
+
+    // Stocker date synchro (ciblé, pas de verrou global)
+    state.settings._derniereSynchro = now;
+    await saveSettingsOnly(_db, state.settings, state.nextFactureNum);
+
+    toast(`${importes} résultat${importes > 1 ? 's' : ''} synchronisé${importes > 1 ? 's' : ''} ✓`);
+    await renderOngletQuestionnaires();
+    refreshPatientBadges();
+
+  } catch (e) {
+    toast(e.message, 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i data-lucide="refresh-cw"></i> Synchroniser avec le Pi'; lucide.createIcons(); }
+  }
+}
+window.synchroniserResultats = synchroniserResultats;
+
+// ── Alertes de détérioration ──────────────────────────────────────────────────
+
+const SEUILS_ALERTE = {
+  phq9: 5, gad7: 5, had: 3, bdi2: 5, isi: 4, pcl5: 10,
+  aaq2: 5, cfq: 5, lsas: 10, qips: 8, iesr: 8, audit: 4, dast10: 2, rathus: -10,
+};
+
+async function verifierAlertes(db, patientId, resultat) {
+  const slug = resultat.questionnaire_slug;
+  const seuil = SEUILS_ALERTE[slug];
+
+  // Alerte spéciale BDI-II item 9 (idées suicidaires)
+  if (slug === 'bdi2' && resultat.details) {
+    const item9 = resultat.details.item_scores?.[8] ?? null;
+    if (item9 !== null && item9 >= 2) {
+      await createAlerteQuestionnaire(db, {
+        patientId,
+        slug,
+        code: resultat.code,
+        datePassation: resultat.date_passation,
+        typeAlerte: 'item_critique',
+        message: `⚠️ Réponse notable à l'item idées suicidaires (BDI-II). Score item 9 : ${item9}. Passation du ${formatDate(resultat.date_passation.slice(0,10))}.`,
+        scoreActuel: resultat.score_total,
+        scorePrecedent: null,
+      });
+    }
+  }
+
+  if (seuil == null) return;
+
+  // Comparer avec la passation précédente
+  const historique = await getResultatsByPatientAndSlug(db, patientId, slug);
+  const precedent = historique.length >= 2 ? historique[historique.length - 2] : null;
+  if (!precedent || resultat.score_total == null || precedent.score_total == null) return;
+
+  const delta = resultat.score_total - precedent.score_total;
+  const deterioration = slug === 'rathus' ? delta <= seuil : delta >= seuil;
+
+  if (deterioration) {
+    const meta = QUESTIONNAIRE_META[slug] || { label: slug };
+    const sign = delta > 0 ? '+' : '';
+    await createAlerteQuestionnaire(db, {
+      patientId,
+      slug,
+      code: resultat.code,
+      datePassation: resultat.date_passation,
+      typeAlerte: 'deterioration',
+      message: `Score ${meta.label} en hausse significative (${sign}${delta} points depuis le ${formatDate(precedent.date_passation.slice(0,10))}). Dernière passation : ${resultat.score_total}.`,
+      scoreActuel: resultat.score_total,
+      scorePrecedent: precedent.score_total,
+    });
+  }
+}
+
+function refreshPatientBadges() {
+  // Recharge la liste pour mettre à jour les badges sur les vignettes patient
+  const grid = document.getElementById('patient-grid');
+  if (grid && grid.closest('#page-patients')?.classList.contains('active')) renderPatients();
+}
+
+// ── Compat legacy renderPwaCodes (appelé depuis switchPatientTab ancien) ───────
+async function renderPwaCodes() { /* remplacé par renderOngletQuestionnaires */ }
+window.renderPwaCodes = renderPwaCodes;
+
+// ── pwaImporterResultats legacy → redirige ────────────────────────────────────
+async function pwaImporterResultats() { await synchroniserResultats(); }
+window.pwaImporterResultats = pwaImporterResultats;
 
 // ===== INIT =====
 async function init() {

@@ -20,7 +20,11 @@ export async function initDb() {
 
   const docDir = await documentDir();
   const dbFilePath = await join(docDir, 'PsyGest', 'psygest.db');
-  const db = await Database.load(`sqlite:${dbFilePath}`);
+  // Pragmas via URI → appliqués à CHAQUE connexion du pool (contrairement à PRAGMA post-open)
+  // _busy_timeout : attend jusqu'à 10s si la DB est occupée (évite SQLITE_BUSY)
+  // _journal_mode=WAL : lectures non-bloquantes
+  // _synchronous=NORMAL : compromis sécurité/perf sur SSD
+  const db = await Database.load(`sqlite:${dbFilePath}?_busy_timeout=10000&_journal_mode=WAL&_synchronous=NORMAL`);
   await applySchema(db);
   return db;
 }
@@ -139,6 +143,51 @@ async function applySchema(db) {
        date_modification TEXT,
        FOREIGN KEY (patient_id) REFERENCES patients(id)
      )`,
+    `CREATE TABLE IF NOT EXISTS pwa_codes (
+       code TEXT PRIMARY KEY,
+       patient_id TEXT NOT NULL,
+       questionnaire TEXT NOT NULL,
+       created_at TEXT NOT NULL,
+       expires_at TEXT NOT NULL,
+       imported INTEGER DEFAULT 0
+     )`,
+    `CREATE TABLE IF NOT EXISTS questionnaire_codes (
+       id INTEGER PRIMARY KEY AUTOINCREMENT,
+       patient_id TEXT NOT NULL,
+       code TEXT NOT NULL UNIQUE,
+       questionnaire_slug TEXT NOT NULL,
+       date_creation TEXT NOT NULL,
+       date_expiration TEXT NOT NULL,
+       statut TEXT NOT NULL DEFAULT 'en_attente',
+       date_completion TEXT,
+       FOREIGN KEY (patient_id) REFERENCES patients(id)
+     )`,
+    `CREATE TABLE IF NOT EXISTS questionnaire_resultats (
+       id INTEGER PRIMARY KEY AUTOINCREMENT,
+       patient_id TEXT NOT NULL,
+       questionnaire_slug TEXT NOT NULL,
+       code TEXT NOT NULL,
+       date_passation TEXT NOT NULL,
+       score_total INTEGER,
+       interpretation TEXT,
+       details_json TEXT,
+       synchro_date TEXT NOT NULL,
+       FOREIGN KEY (patient_id) REFERENCES patients(id)
+     )`,
+    `CREATE TABLE IF NOT EXISTS alertes_questionnaires (
+       id INTEGER PRIMARY KEY AUTOINCREMENT,
+       patient_id TEXT NOT NULL,
+       questionnaire_slug TEXT NOT NULL,
+       code TEXT NOT NULL,
+       date_passation TEXT NOT NULL,
+       type_alerte TEXT NOT NULL,
+       message TEXT NOT NULL,
+       score_actuel INTEGER,
+       score_precedent INTEGER,
+       lu INTEGER DEFAULT 0,
+       date_creation TEXT NOT NULL,
+       FOREIGN KEY (patient_id) REFERENCES patients(id)
+     )`,
   ];
   for (const sql of tables) {
     await db.execute(sql);
@@ -146,6 +195,7 @@ async function applySchema(db) {
   // Migrations — colonnes ajoutées après la création initiale
   const migrations = [
     'ALTER TABLE patients ADD COLUMN source_orientation TEXT',
+    'ALTER TABLE pwa_codes ADD COLUMN imported INTEGER DEFAULT 0',
   ];
   for (const sql of migrations) {
     try { await db.execute(sql); } catch (_) {}
@@ -303,7 +353,7 @@ export async function loadAll(db) {
  * Utilise INSERT OR REPLACE pour gérer créations et mises à jour.
  */
 export async function saveAll(db, state) {
-  await db.execute('BEGIN TRANSACTION');
+  await db.execute('BEGIN IMMEDIATE');
   try {
     await saveSettings(db, state);
     await savePatientsAll(db, state.patients);
@@ -311,16 +361,16 @@ export async function saveAll(db, state) {
     await saveFacturesAll(db, state.factures);
     await saveChargesAll(db, state.charges);
     await db.execute('COMMIT');
-  } catch (e) {
-    await db.execute('ROLLBACK');
-    throw e;
+  } catch (originalError) {
+    try { await db.execute('ROLLBACK'); } catch (_) {}
+    throw originalError;
   }
 }
 
-async function saveSettings(db, state) {
-  await db.execute('DELETE FROM settings');
-  const s = state.settings;
-  const pairs = [
+// Source unique de vérité pour la sérialisation des settings
+function buildSettingsPairs(settings, nextFactureNum) {
+  const s = settings;
+  return [
     ['prenom', s.prenom || ''],
     ['nom', s.nom || ''],
     ['rpps', s.rpps || ''],
@@ -333,9 +383,16 @@ async function saveSettings(db, state) {
     ['dureeConsultation', String(s.dureeConsultation ?? 50)],
     ['calendlyUrl', s.calendlyUrl || ''],
     ['objectifCA', String(s.objectifCA ?? 0)],
-    ['_nextFactureNum', String(state.nextFactureNum ?? 1)],
+    ['pwaUrl', s.pwaUrl || ''],
+    ['pwaApiKey', s.pwaApiKey || ''],
+    ['_nextFactureNum', String(nextFactureNum ?? 1)],
+    ['_derniereSynchro', s._derniereSynchro || ''],
   ];
-  for (const [key, value] of pairs) {
+}
+
+async function saveSettings(db, state) {
+  await db.execute('DELETE FROM settings');
+  for (const [key, value] of buildSettingsPairs(state.settings, state.nextFactureNum)) {
     await db.execute('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', [key, value]);
   }
 }
@@ -451,6 +508,18 @@ async function saveChargesAll(db, charges) {
       'INSERT INTO charges (id,date,libelle,montant,categorie) VALUES (?,?,?,?,?)',
       [String(c.id), c.date, c.desc, c.montant, c.cat || 'autre']
     );
+  }
+}
+
+// ─── Sauvegarde ciblée des settings ───────────────────────────────────────────
+
+/**
+ * Sauvegarde uniquement les settings — sans transaction globale,
+ * sans toucher aux patients/séances/factures.
+ */
+export async function saveSettingsOnly(db, settings, nextFactureNum) {
+  for (const [key, value] of buildSettingsPairs(settings, nextFactureNum)) {
+    await db.execute('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', [key, value]);
   }
 }
 
@@ -663,4 +732,121 @@ export async function importAllData(db, data) {
     };
     await saveAll(db, migState);
   }
+}
+
+// ─── Questionnaire Codes (Phase 3) ────────────────────────────────────────────
+
+export async function createQuestionnaireCode(db, { patientId, code, slug, dateCreation, dateExpiration }) {
+  await db.execute(
+    `INSERT INTO questionnaire_codes (patient_id, code, questionnaire_slug, date_creation, date_expiration, statut)
+     VALUES (?, ?, ?, ?, ?, 'en_attente')`,
+    [patientId, code, slug, dateCreation, dateExpiration]
+  );
+}
+
+export async function getQuestionnaireCodesByPatient(db, patientId) {
+  return db.select(
+    `SELECT * FROM questionnaire_codes WHERE patient_id = ? ORDER BY date_creation DESC`,
+    [patientId]
+  );
+}
+
+export async function updateQuestionnaireCodeStatut(db, code, statut, dateCompletion = null) {
+  await db.execute(
+    `UPDATE questionnaire_codes SET statut = ?, date_completion = ? WHERE code = ?`,
+    [statut, dateCompletion, code]
+  );
+}
+
+export async function getQuestionnaireCodeByCode(db, code) {
+  const rows = await db.select(`SELECT * FROM questionnaire_codes WHERE code = ?`, [code]);
+  return rows[0] || null;
+}
+
+export async function expireQuestionnaireCodesLocally(db) {
+  const now = new Date().toISOString();
+  await db.execute(
+    `UPDATE questionnaire_codes SET statut = 'expiré'
+     WHERE statut = 'en_attente' AND date_expiration < ?`,
+    [now]
+  );
+}
+
+// ─── Questionnaire Résultats (Phase 3) ────────────────────────────────────────
+
+export async function insertQuestionnaireResultat(db, { patientId, slug, code, datePassation, scoreTotal, interpretation, detailsJson, synchroDate }) {
+  const existing = await db.select(
+    `SELECT id FROM questionnaire_resultats WHERE code = ?`, [code]
+  );
+  if (existing.length) return; // déjà importé
+  await db.execute(
+    `INSERT INTO questionnaire_resultats
+       (patient_id, questionnaire_slug, code, date_passation, score_total, interpretation, details_json, synchro_date)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    [patientId, slug, code, datePassation, scoreTotal, interpretation, detailsJson, synchroDate]
+  );
+}
+
+export async function getResultatsByPatient(db, patientId) {
+  return db.select(
+    `SELECT * FROM questionnaire_resultats WHERE patient_id = ? ORDER BY date_passation ASC`,
+    [patientId]
+  );
+}
+
+export async function getResultatsByPatientAndSlug(db, patientId, slug) {
+  return db.select(
+    `SELECT * FROM questionnaire_resultats WHERE patient_id = ? AND questionnaire_slug = ? ORDER BY date_passation ASC`,
+    [patientId, slug]
+  );
+}
+
+// ─── Alertes Questionnaires (Phase 3) ─────────────────────────────────────────
+
+export async function createAlerteQuestionnaire(db, { patientId, slug, code, datePassation, typeAlerte, message, scoreActuel, scorePrecedent }) {
+  const now = new Date().toISOString();
+  await db.execute(
+    `INSERT INTO alertes_questionnaires
+       (patient_id, questionnaire_slug, code, date_passation, type_alerte, message, score_actuel, score_precedent, lu, date_creation)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`,
+    [patientId, slug, code, datePassation, typeAlerte, message, scoreActuel ?? null, scorePrecedent ?? null, now]
+  );
+}
+
+export async function getAlertesByPatient(db, patientId) {
+  return db.select(
+    `SELECT * FROM alertes_questionnaires WHERE patient_id = ? ORDER BY date_creation DESC`,
+    [patientId]
+  );
+}
+
+export async function getAlertesNonLues(db) {
+  return db.select(
+    `SELECT * FROM alertes_questionnaires WHERE lu = 0 ORDER BY date_creation DESC`
+  );
+}
+
+export async function marquerAlertesLues(db, patientId) {
+  await db.execute(
+    `UPDATE alertes_questionnaires SET lu = 1 WHERE patient_id = ? AND lu = 0`,
+    [patientId]
+  );
+}
+
+// ─── PWA Codes (legacy) ───────────────────────────────────────────────────────
+
+export async function savePwaCode(db, { code, patientId, questionnaire, createdAt, expiresAt }) {
+  await db.execute(
+    `INSERT OR REPLACE INTO pwa_codes (code, patient_id, questionnaire, created_at, expires_at, imported)
+     VALUES (?, ?, ?, ?, ?, 0)`,
+    [code, patientId, questionnaire, createdAt, expiresAt]
+  );
+}
+
+export async function loadPwaCodes(db) {
+  return db.select('SELECT * FROM pwa_codes ORDER BY created_at DESC');
+}
+
+export async function markPwaCodeImported(db, code) {
+  await db.execute('UPDATE pwa_codes SET imported = 1 WHERE code = ?', [code]);
 }

@@ -9,7 +9,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=DM+Sans:wght@300..700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/style.css">
+<link rel="stylesheet" href="/style.css?v=2">
 <script src="/assets/lucide.min.js"></script>
 </head>
 <body>
@@ -420,9 +420,253 @@
     </div>
 
     <div style="margin-top:var(--space-6);">
+      <div class="settings-section-title">Connexion Pi (questionnaires à distance)</div>
+      <p style="font-size:var(--text-xs);color:var(--color-text-muted);margin-bottom:var(--space-4);">Renseignez l'URL et la clé API du serveur Pi pour envoyer des codes et synchroniser les résultats.</p>
+      <div class="settings-grid">
+        <div>
+          <div class="form-group" style="margin-bottom:var(--space-3);">
+            <label for="set-pwa-url">URL du Pi</label>
+            <input class="form-input" id="set-pwa-url" placeholder="https://questionnaires.cesarbroche.fr">
+          </div>
+          <div class="form-group" style="margin-bottom:var(--space-3);">
+            <label for="set-pwa-api-key">Clé API</label>
+            <div style="display:flex;gap:var(--space-2);">
+              <input class="form-input" id="set-pwa-api-key" type="password" placeholder="Clé générée lors de l'installation" style="flex:1;">
+              <button class="btn btn-ghost btn-sm" type="button" onclick="toggleApiKeyVisibility()" title="Afficher/masquer"><i data-lucide="eye" id="api-key-eye-icon"></i></button>
+            </div>
+          </div>
+          <button class="btn btn-secondary btn-sm" onclick="testerConnexionPi()"><i data-lucide="wifi"></i> Tester la connexion</button>
+          <span id="pi-ping-status" style="margin-left:var(--space-3);font-size:var(--text-sm);"></span>
+        </div>
+      </div>
+    </div>
+
+    <div style="margin-top:var(--space-6);">
       <button class="btn btn-primary" onclick="saveSettings()"><i data-lucide="save"></i> Enregistrer les réglages</button>
     </div>
   </section>
+
+<!-- DOCUMENTS — Liste -->
+<section class="page page-content" id="page-documents">
+  <div class="section-header">
+    <h2 class="section-title">Documents &amp; Courriers</h2>
+    <button class="btn btn-primary" onclick="newDocument()">
+      <i data-lucide="plus"></i> Nouveau document
+    </button>
+  </div>
+  <div style="display:flex;gap:var(--space-3);flex-wrap:wrap;margin-bottom:var(--space-5);">
+    <select class="form-select" id="doc-filter-type" onchange="renderDocumentsList()" style="max-width:300px;">
+      <option value="">— Tous les types —</option>
+      <option value="liaison_medecin">Lettre de liaison — Médecin traitant</option>
+      <option value="liaison_psychiatre">Lettre de liaison — Psychiatre</option>
+      <option value="attestation_suivi">Attestation de suivi psychologique</option>
+      <option value="attestation_presence">Attestation de présence</option>
+      <option value="cr_psychometrique">Compte-rendu bilan psychométrique</option>
+      <option value="cr_orientation">Compte-rendu bilan d'orientation</option>
+      <option value="mdph">Volet psychologique — MDPH</option>
+    </select>
+    <select class="form-select" id="doc-filter-patient" onchange="renderDocumentsList()" style="max-width:240px;">
+      <option value="">— Tous les patients —</option>
+    </select>
+  </div>
+  <div class="table-container">
+    <table>
+      <thead>
+        <tr><th>Date</th><th>Type</th><th>Patient</th><th>Titre</th><th>Statut</th><th></th></tr>
+      </thead>
+      <tbody id="documents-tbody">
+        <tr><td colspan="6"><div style="padding:var(--space-8);text-align:center;color:var(--color-text-muted);">Aucun document.</div></td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- DOCUMENT ÉDITEUR -->
+<section class="page page-content" id="page-document-editor">
+  <div class="doc-editor-header">
+    <button class="btn btn-ghost btn-sm" onclick="navigate('documents')">
+      <i data-lucide="arrow-left"></i> Documents
+    </button>
+    <div id="doc-editor-title-bar" style="flex:1;font-family:var(--font-display);font-size:var(--text-base);font-weight:600;padding:0 var(--space-3);"></div>
+    <div style="display:flex;gap:var(--space-2);">
+      <button class="btn btn-ghost btn-sm" style="color:var(--color-error);" id="doc-btn-delete" onclick="deleteCurrentDocument()"><i data-lucide="trash-2"></i></button>
+      <button class="btn btn-ghost btn-sm" id="doc-btn-reopen" onclick="reopenDocument()" style="display:none;"><i data-lucide="unlock"></i> Rouvrir</button>
+      <button class="btn btn-secondary btn-sm" id="doc-btn-draft" onclick="saveDocumentDraft()"><i data-lucide="save"></i> Brouillon</button>
+      <button class="btn btn-primary btn-sm" id="doc-btn-finalize" onclick="finalizeDocument()"><i data-lucide="check-circle"></i> Finaliser</button>
+    </div>
+  </div>
+  <div class="doc-editor-body">
+    <div class="doc-editor-form" id="doc-editor-form">
+      <!-- filled by JS -->
+    </div>
+    <div class="doc-editor-preview-col">
+      <div class="doc-preview-toolbar">
+        <span id="doc-preview-status" style="flex:1;"></span>
+        <button class="btn btn-ghost btn-sm" id="doc-btn-edit-content" onclick="toggleDocContentEdit()"><i data-lucide="edit-3"></i> Modifier le contenu</button>
+        <button class="btn btn-ghost btn-sm" onclick="printDocument()"><i data-lucide="printer"></i> Imprimer</button>
+      </div>
+      <div class="doc-preview-frame">
+        <div id="doc-preview-area"></div>
+        <div id="doc-content-editor-wrap" style="display:none;">
+          <textarea id="doc-content-textarea" class="form-textarea" style="min-height:480px;font-family:monospace;font-size:var(--text-xs);"></textarea>
+          <div style="display:flex;gap:var(--space-2);margin-top:var(--space-3);">
+            <button class="btn btn-primary btn-sm" onclick="applyDocContentEdit()"><i data-lucide="check"></i> Appliquer</button>
+            <button class="btn btn-ghost btn-sm" onclick="cancelDocContentEdit()">Annuler</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- PATIENT DETAIL -->
+<section class="page page-content" id="page-patient-detail">
+
+  <!-- Dashboard patient (remplace le header statique) -->
+  <div id="pd-dashboard"></div>
+
+  <!-- Onglets -->
+  <div class="tabs patient-tabs" id="pd-tabs">
+    <button class="tab-btn active" onclick="switchPatientTab('infos')">Infos</button>
+    <button class="tab-btn" onclick="switchPatientTab('anamnes')">Anamnèse</button>
+    <button class="tab-btn" onclick="switchPatientTab('notes')">Notes cliniques</button>
+    <button class="tab-btn" onclick="switchPatientTab('questionnaires')">Questionnaires</button>
+    <button class="tab-btn" onclick="switchPatientTab('objectifs')">Objectifs</button>
+    <button class="tab-btn" onclick="switchPatientTab('documents')">Documents</button>
+  </div>
+
+  <div class="patient-tab-panels">
+
+    <!-- TAB INFOS -->
+    <div id="pd-tab-infos" class="active">
+      <div class="table-container">
+        <div id="pd-infos-content"></div>
+      </div>
+    </div>
+
+    <!-- TAB ANAMNESE -->
+    <div id="pd-tab-anamnes"></div>
+
+    <!-- TAB NOTES -->
+    <div id="pd-tab-notes">
+      <!-- Éditeur -->
+      <div class="note-editor">
+        <div class="settings-section-title" style="margin-bottom:var(--space-4);">Nouvelle note / Modifier</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:var(--space-3);margin-bottom:var(--space-3);">
+          <div class="form-group">
+            <label>Date</label>
+            <input class="form-input" type="date" id="note-date">
+          </div>
+          <div class="form-group">
+            <label>Séance liée (optionnel)</label>
+            <select class="form-select" id="note-seance"><option value="">— aucune —</option></select>
+          </div>
+          <div class="form-group">
+            <label>Template</label>
+            <select class="form-select" id="note-template" onchange="applyNoteTemplate()">
+              <option value="libre">Libre</option>
+              <option value="eval_initiale">Évaluation initiale (TCC)</option>
+              <option value="seance_tcc">Séance TCC</option>
+              <option value="seance_act">Séance ACT</option>
+              <option value="bilan">Bilan de fin de suivi</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-group" style="margin-bottom:var(--space-3);">
+          <label>Contenu</label>
+          <textarea class="form-textarea" id="note-contenu" style="min-height:200px;font-family:monospace;font-size:var(--text-sm);"></textarea>
+        </div>
+        <div style="display:flex;gap:var(--space-2);">
+          <button class="btn btn-primary" onclick="saveNote()"><i data-lucide="save"></i> Enregistrer</button>
+          <button class="btn btn-ghost" onclick="resetNoteEditor()">Annuler</button>
+        </div>
+      </div>
+      <!-- Liste notes -->
+      <div id="notes-list"></div>
+    </div>
+
+    <!-- TAB QUESTIONNAIRES — section Pi injectée par renderOngletQuestionnaires() -->
+    <div id="pd-tab-questionnaires">
+      <div id="qi-remote-section"></div>
+
+      <!-- Passations locales en cabinet (PHQ-9 / GAD-7) -->
+      <div style="margin-top:var(--space-6);">
+        <h3 class="section-title" style="font-size:var(--text-base);margin-bottom:var(--space-4);">Passations en cabinet</h3>
+        <div id="qblock-phq9" class="questionnaire-block">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:var(--space-3);">
+            <div>
+              <div class="questionnaire-title">PHQ-9 — Dépression</div>
+              <div style="font-size:var(--text-xs);color:var(--color-text-muted);">9 questions · Score 0–27</div>
+            </div>
+            <button class="btn btn-primary btn-sm" onclick="startQuestionnaire('phq9')"><i data-lucide="plus"></i> Nouvelle passation</button>
+          </div>
+          <div class="questionnaire-passation" id="qpassation-phq9"></div>
+          <div class="passations-history" id="qhistory-phq9"></div>
+          <div class="chart-wrap" id="qchart-phq9"></div>
+        </div>
+        <div id="qblock-gad7" class="questionnaire-block">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:var(--space-3);">
+            <div>
+              <div class="questionnaire-title">GAD-7 — Anxiété</div>
+              <div style="font-size:var(--text-xs);color:var(--color-text-muted);">7 questions · Score 0–21</div>
+            </div>
+            <button class="btn btn-primary btn-sm" onclick="startQuestionnaire('gad7')"><i data-lucide="plus"></i> Nouvelle passation</button>
+          </div>
+          <div class="questionnaire-passation" id="qpassation-gad7"></div>
+          <div class="passations-history" id="qhistory-gad7"></div>
+          <div class="chart-wrap" id="qchart-gad7"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB OBJECTIFS -->
+    <div id="pd-tab-objectifs">
+
+      <!-- A. Valeurs -->
+      <div style="margin-bottom:var(--space-6);">
+        <div class="section-header">
+          <h3 class="section-title" style="font-size:var(--text-base);">Valeurs du patient</h3>
+          <button class="btn btn-primary btn-sm" onclick="saveValeurs()"><i data-lucide="save"></i> Enregistrer les valeurs</button>
+        </div>
+        <div class="valeurs-grid" id="valeurs-grid"></div>
+      </div>
+
+      <!-- B. Objectifs -->
+      <div style="margin-bottom:var(--space-6);">
+        <div class="section-header">
+          <h3 class="section-title" style="font-size:var(--text-base);">Objectifs thérapeutiques</h3>
+          <button class="btn btn-primary btn-sm" onclick="openModal('modalNewObjectif')"><i data-lucide="plus"></i> Ajouter un objectif</button>
+        </div>
+        <div id="objectifs-list"></div>
+      </div>
+
+      <!-- C. Engagements -->
+      <div>
+        <div class="section-header">
+          <h3 class="section-title" style="font-size:var(--text-base);">Engagements de séance</h3>
+          <button class="btn btn-primary btn-sm" onclick="addEngagement()"><i data-lucide="plus"></i> Ajouter</button>
+        </div>
+        <div style="display:flex;gap:var(--space-2);margin-bottom:var(--space-4);">
+          <input class="form-input" id="engagement-text" placeholder="Texte de l'engagement…" style="flex:1;">
+        </div>
+        <div id="engagements-list"></div>
+      </div>
+    </div>
+
+    <!-- TAB DOCUMENTS -->
+    <div id="pd-tab-documents">
+      <div class="section-header" style="margin-bottom:var(--space-4);">
+        <h3 class="section-title" style="font-size:var(--text-base);">Documents du patient</h3>
+        <button class="btn btn-primary btn-sm" onclick="newDocumentForPatient()">
+          <i data-lucide="plus"></i> Nouveau document
+        </button>
+      </div>
+      <div id="pd-documents-list"></div>
+    </div>
+
+  </div><!-- /patient-tab-panels -->
+</section>
+
 </main>
 
 <!-- MODAL NOUVEAU PATIENT -->
@@ -571,229 +815,6 @@
     </div>
   </div>
 </div>
-
-<!-- DOCUMENTS — Liste -->
-<section class="page page-content" id="page-documents">
-  <div class="section-header">
-    <h2 class="section-title">Documents &amp; Courriers</h2>
-    <button class="btn btn-primary" onclick="newDocument()">
-      <i data-lucide="plus"></i> Nouveau document
-    </button>
-  </div>
-  <div style="display:flex;gap:var(--space-3);flex-wrap:wrap;margin-bottom:var(--space-5);">
-    <select class="form-select" id="doc-filter-type" onchange="renderDocumentsList()" style="max-width:300px;">
-      <option value="">— Tous les types —</option>
-      <option value="liaison_medecin">Lettre de liaison — Médecin traitant</option>
-      <option value="liaison_psychiatre">Lettre de liaison — Psychiatre</option>
-      <option value="attestation_suivi">Attestation de suivi psychologique</option>
-      <option value="attestation_presence">Attestation de présence</option>
-      <option value="cr_psychometrique">Compte-rendu bilan psychométrique</option>
-      <option value="cr_orientation">Compte-rendu bilan d'orientation</option>
-      <option value="mdph">Volet psychologique — MDPH</option>
-    </select>
-    <select class="form-select" id="doc-filter-patient" onchange="renderDocumentsList()" style="max-width:240px;">
-      <option value="">— Tous les patients —</option>
-    </select>
-  </div>
-  <div class="table-container">
-    <table>
-      <thead>
-        <tr><th>Date</th><th>Type</th><th>Patient</th><th>Titre</th><th>Statut</th><th></th></tr>
-      </thead>
-      <tbody id="documents-tbody">
-        <tr><td colspan="6"><div style="padding:var(--space-8);text-align:center;color:var(--color-text-muted);">Aucun document.</div></td></tr>
-      </tbody>
-    </table>
-  </div>
-</section>
-
-<!-- DOCUMENT ÉDITEUR -->
-<section class="page page-content" id="page-document-editor">
-  <div class="doc-editor-header">
-    <button class="btn btn-ghost btn-sm" onclick="navigate('documents')">
-      <i data-lucide="arrow-left"></i> Documents
-    </button>
-    <div id="doc-editor-title-bar" style="flex:1;font-family:var(--font-display);font-size:var(--text-base);font-weight:600;padding:0 var(--space-3);"></div>
-    <div style="display:flex;gap:var(--space-2);">
-      <button class="btn btn-ghost btn-sm" style="color:var(--color-error);" id="doc-btn-delete" onclick="deleteCurrentDocument()"><i data-lucide="trash-2"></i></button>
-      <button class="btn btn-ghost btn-sm" id="doc-btn-reopen" onclick="reopenDocument()" style="display:none;"><i data-lucide="unlock"></i> Rouvrir</button>
-      <button class="btn btn-secondary btn-sm" id="doc-btn-draft" onclick="saveDocumentDraft()"><i data-lucide="save"></i> Brouillon</button>
-      <button class="btn btn-primary btn-sm" id="doc-btn-finalize" onclick="finalizeDocument()"><i data-lucide="check-circle"></i> Finaliser</button>
-    </div>
-  </div>
-  <div class="doc-editor-body">
-    <div class="doc-editor-form" id="doc-editor-form">
-      <!-- filled by JS -->
-    </div>
-    <div class="doc-editor-preview-col">
-      <div class="doc-preview-toolbar">
-        <span id="doc-preview-status" style="flex:1;"></span>
-        <button class="btn btn-ghost btn-sm" id="doc-btn-edit-content" onclick="toggleDocContentEdit()"><i data-lucide="edit-3"></i> Modifier le contenu</button>
-        <button class="btn btn-ghost btn-sm" onclick="printDocument()"><i data-lucide="printer"></i> Imprimer</button>
-      </div>
-      <div class="doc-preview-frame">
-        <div id="doc-preview-area"></div>
-        <div id="doc-content-editor-wrap" style="display:none;">
-          <textarea id="doc-content-textarea" class="form-textarea" style="min-height:480px;font-family:monospace;font-size:var(--text-xs);"></textarea>
-          <div style="display:flex;gap:var(--space-2);margin-top:var(--space-3);">
-            <button class="btn btn-primary btn-sm" onclick="applyDocContentEdit()"><i data-lucide="check"></i> Appliquer</button>
-            <button class="btn btn-ghost btn-sm" onclick="cancelDocContentEdit()">Annuler</button>
-          </div>
-        </div>
-      </div>
-    </div>
-  </div>
-</section>
-
-<!-- PATIENT DETAIL -->
-<section class="page page-content" id="page-patient-detail">
-
-  <!-- Dashboard patient (remplace le header statique) -->
-  <div id="pd-dashboard"></div>
-
-  <!-- Onglets -->
-  <div class="tabs patient-tabs" id="pd-tabs">
-    <button class="tab-btn active" onclick="switchPatientTab('infos')">Infos</button>
-    <button class="tab-btn" onclick="switchPatientTab('anamnes')">Anamnèse</button>
-    <button class="tab-btn" onclick="switchPatientTab('notes')">Notes cliniques</button>
-    <button class="tab-btn" onclick="switchPatientTab('questionnaires')">Questionnaires</button>
-    <button class="tab-btn" onclick="switchPatientTab('objectifs')">Objectifs</button>
-    <button class="tab-btn" onclick="switchPatientTab('documents')">Documents</button>
-  </div>
-
-  <div class="patient-tab-panels">
-
-    <!-- TAB INFOS -->
-    <div id="pd-tab-infos" class="active">
-      <div class="table-container">
-        <div id="pd-infos-content"></div>
-      </div>
-    </div>
-
-    <!-- TAB ANAMNESE -->
-    <div id="pd-tab-anamnes"></div>
-
-    <!-- TAB NOTES -->
-    <div id="pd-tab-notes">
-      <!-- Éditeur -->
-      <div class="note-editor">
-        <div class="settings-section-title" style="margin-bottom:var(--space-4);">Nouvelle note / Modifier</div>
-        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:var(--space-3);margin-bottom:var(--space-3);">
-          <div class="form-group">
-            <label>Date</label>
-            <input class="form-input" type="date" id="note-date">
-          </div>
-          <div class="form-group">
-            <label>Séance liée (optionnel)</label>
-            <select class="form-select" id="note-seance"><option value="">— aucune —</option></select>
-          </div>
-          <div class="form-group">
-            <label>Template</label>
-            <select class="form-select" id="note-template" onchange="applyNoteTemplate()">
-              <option value="libre">Libre</option>
-              <option value="eval_initiale">Évaluation initiale (TCC)</option>
-              <option value="seance_tcc">Séance TCC</option>
-              <option value="seance_act">Séance ACT</option>
-              <option value="bilan">Bilan de fin de suivi</option>
-            </select>
-          </div>
-        </div>
-        <div class="form-group" style="margin-bottom:var(--space-3);">
-          <label>Contenu</label>
-          <textarea class="form-textarea" id="note-contenu" style="min-height:200px;font-family:monospace;font-size:var(--text-sm);"></textarea>
-        </div>
-        <div style="display:flex;gap:var(--space-2);">
-          <button class="btn btn-primary" onclick="saveNote()"><i data-lucide="save"></i> Enregistrer</button>
-          <button class="btn btn-ghost" onclick="resetNoteEditor()">Annuler</button>
-        </div>
-      </div>
-      <!-- Liste notes -->
-      <div id="notes-list"></div>
-    </div>
-
-    <!-- TAB QUESTIONNAIRES -->
-    <div id="pd-tab-questionnaires">
-      <div class="alert alert-info" style="margin-bottom:var(--space-5);">
-        <i data-lucide="info"></i>
-        <div class="clinical-disclaimer" style="margin:0;">Ces outils sont des aides au repérage clinique, non des outils diagnostiques. Leur interprétation s'inscrit dans le cadre d'une évaluation clinique globale.</div>
-      </div>
-
-      <!-- PHQ-9 -->
-      <div class="questionnaire-block" id="qblock-phq9">
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:var(--space-3);">
-          <div>
-            <div class="questionnaire-title">PHQ-9 — Dépression</div>
-            <div style="font-size:var(--text-xs);color:var(--color-text-muted);">9 questions · Score 0–27</div>
-          </div>
-          <button class="btn btn-primary btn-sm" onclick="startQuestionnaire('phq9')"><i data-lucide="plus"></i> Nouvelle passation</button>
-        </div>
-        <div class="questionnaire-passation" id="qpassation-phq9"></div>
-        <div class="passations-history" id="qhistory-phq9"></div>
-        <div class="chart-wrap" id="qchart-phq9"></div>
-      </div>
-
-      <!-- GAD-7 -->
-      <div class="questionnaire-block" id="qblock-gad7">
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:var(--space-3);">
-          <div>
-            <div class="questionnaire-title">GAD-7 — Anxiété</div>
-            <div style="font-size:var(--text-xs);color:var(--color-text-muted);">7 questions · Score 0–21</div>
-          </div>
-          <button class="btn btn-primary btn-sm" onclick="startQuestionnaire('gad7')"><i data-lucide="plus"></i> Nouvelle passation</button>
-        </div>
-        <div class="questionnaire-passation" id="qpassation-gad7"></div>
-        <div class="passations-history" id="qhistory-gad7"></div>
-        <div class="chart-wrap" id="qchart-gad7"></div>
-      </div>
-    </div>
-
-    <!-- TAB OBJECTIFS -->
-    <div id="pd-tab-objectifs">
-
-      <!-- A. Valeurs -->
-      <div style="margin-bottom:var(--space-6);">
-        <div class="section-header">
-          <h3 class="section-title" style="font-size:var(--text-base);">Valeurs du patient</h3>
-          <button class="btn btn-primary btn-sm" onclick="saveValeurs()"><i data-lucide="save"></i> Enregistrer les valeurs</button>
-        </div>
-        <div class="valeurs-grid" id="valeurs-grid"></div>
-      </div>
-
-      <!-- B. Objectifs -->
-      <div style="margin-bottom:var(--space-6);">
-        <div class="section-header">
-          <h3 class="section-title" style="font-size:var(--text-base);">Objectifs thérapeutiques</h3>
-          <button class="btn btn-primary btn-sm" onclick="openModal('modalNewObjectif')"><i data-lucide="plus"></i> Ajouter un objectif</button>
-        </div>
-        <div id="objectifs-list"></div>
-      </div>
-
-      <!-- C. Engagements -->
-      <div>
-        <div class="section-header">
-          <h3 class="section-title" style="font-size:var(--text-base);">Engagements de séance</h3>
-          <button class="btn btn-primary btn-sm" onclick="addEngagement()"><i data-lucide="plus"></i> Ajouter</button>
-        </div>
-        <div style="display:flex;gap:var(--space-2);margin-bottom:var(--space-4);">
-          <input class="form-input" id="engagement-text" placeholder="Texte de l'engagement…" style="flex:1;">
-        </div>
-        <div id="engagements-list"></div>
-      </div>
-    </div>
-
-    <!-- TAB DOCUMENTS -->
-    <div id="pd-tab-documents">
-      <div class="section-header" style="margin-bottom:var(--space-4);">
-        <h3 class="section-title" style="font-size:var(--text-base);">Documents du patient</h3>
-        <button class="btn btn-primary btn-sm" onclick="newDocumentForPatient()">
-          <i data-lucide="plus"></i> Nouveau document
-        </button>
-      </div>
-      <div id="pd-documents-list"></div>
-    </div>
-
-  </div><!-- /patient-tab-panels -->
-</section>
 
 <!-- MODAL NOUVEL OBJECTIF -->
 <div class="modal-overlay" id="modalNewObjectif">
