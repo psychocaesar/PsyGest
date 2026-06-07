@@ -457,6 +457,14 @@ const SEANCE_STATUTS = {
   present:   { label: 'Présent ✓', badge: 'badge-success',  cal: ['#d4e8ce','#427a32'] },
   absent:    { label: 'Absent',    badge: 'badge-warning',  cal: ['#f0e2d4','#9e6030'] },
   annule:    { label: 'Annulé',    badge: 'badge-error',    cal: ['#f5dde1','#a0354a'] },
+  no_show:   { label: 'No-show',   badge: 'badge-warning',  cal: ['#fde8cc','#9e5e10'] },
+};
+
+// Couleurs calendrier par mode de séance (écrasées par statut si annulé/no_show)
+const SEANCE_MODE_CAL = {
+  presentiel: ['#ddeaf8','#1a5fa8'],
+  visio:      ['#e8d8f0','#6b2fa0'],
+  telephone:  ['#e5e5e5','#555555'],
 };
 
 // ===== AGENDA =====
@@ -494,12 +502,15 @@ window.toggleICSPanel = toggleICSPanel;
 
 // ===== SÉANCES - LISTE =====
 async function saveSeance() {
-  const patientId = parseInt(document.getElementById('s-patient').value) || null;
+  const patientId = document.getElementById('s-patient').value || null;
   const date = document.getElementById('s-date').value;
   const heure = document.getElementById('s-heure').value;
   if (!date || !heure) { toast('Date et heure requises.', 'error'); return; }
   const editId = document.getElementById('s-edit-id').value;
   const statut = document.getElementById('s-statut').value || 'planifie';
+  const mode = document.getElementById('s-mode')?.value || 'presentiel';
+  const honoraires = parseFloat(document.getElementById('s-honoraires')?.value) || null;
+  const lienVisio = document.getElementById('s-lien-visio')?.value || '';
   const noteSeance = document.getElementById('s-note-seance').value;
   if (editId) {
     const s = state.seances.find(s => String(s.id) === editId);
@@ -508,6 +519,7 @@ async function saveSeance() {
       s.duree = document.getElementById('s-duree').value;
       s.type = document.getElementById('s-type').value;
       s.statut = statut; s.noteInterne = noteSeance;
+      s.mode = mode; s.honoraires = honoraires; s.lienVisio = lienVisio;
     }
   } else {
     state.seances.push({
@@ -515,12 +527,14 @@ async function saveSeance() {
       duree: document.getElementById('s-duree').value,
       type: document.getElementById('s-type').value,
       statut, noteInterne: noteSeance, facture: false, note: '',
+      mode, honoraires, lienVisio,
     });
   }
   await saveState();
   closeModal('modalNewSeance');
   document.getElementById('s-edit-id').value = '';
   document.getElementById('s-note-seance').value = '';
+  if (document.getElementById('s-lien-visio')) document.getElementById('s-lien-visio').value = '';
   document.getElementById('seance-modal-title').textContent = 'Planifier une séance';
   document.getElementById('seance-modal-btn').innerHTML = '<i data-lucide="calendar-plus"></i> Planifier';
   lucide.createIcons();
@@ -546,12 +560,22 @@ function openEditSeance(id) {
   document.getElementById('s-type').value = s.type || 'individuel';
   document.getElementById('s-statut').value = s.statut || 'planifie';
   document.getElementById('s-note-seance').value = s.noteInterne || '';
+  if (document.getElementById('s-mode')) document.getElementById('s-mode').value = s.mode || 'presentiel';
+  if (document.getElementById('s-honoraires')) document.getElementById('s-honoraires').value = s.honoraires ?? '';
+  if (document.getElementById('s-lien-visio')) document.getElementById('s-lien-visio').value = s.lienVisio || '';
+  _toggleLienVisio(s.mode || 'presentiel');
   document.getElementById('seance-modal-title').textContent = 'Modifier la séance';
   document.getElementById('seance-modal-btn').innerHTML = '<i data-lucide="save"></i> Enregistrer';
   lucide.createIcons();
   document.getElementById('modalNewSeance').classList.add('open');
 }
+
+function _toggleLienVisio(mode) {
+  const group = document.getElementById('s-lien-visio-group');
+  if (group) group.style.display = mode === 'visio' ? '' : 'none';
+}
 window.openEditSeance = openEditSeance;
+window._toggleLienVisio = _toggleLienVisio;
 
 async function setSeanceStatut(id, statut) {
   const s = findSeance(id);
@@ -676,8 +700,11 @@ function renderCalendar() {
         ? `${s.heure || ''} ${patient.prenom[0]}.${patient.nom}`
         : `${s.heure || ''} ${s.note || 'Rendez-vous'}`;
       const st = SEANCE_STATUTS[s.statut || 'planifie'] || SEANCE_STATUTS.planifie;
+      const calColor = (s.statut === 'annule' || s.statut === 'no_show')
+        ? st.cal
+        : (SEANCE_MODE_CAL[s.mode] || SEANCE_MODE_CAL.presentiel);
       const title = `${patient ? patient.prenom + ' ' + patient.nom : (s.note || 'RDV')} – ${s.heure || ''} (${s.duree} min) · ${st.label}`;
-      html += `<div class="cal-event" style="background:${st.cal[0]};color:${st.cal[1]};" title="${title}" onclick="event.stopPropagation();openEditSeance(${s.id})">${label.trim()}</div>`;
+      html += `<div class="cal-event" style="background:${calColor[0]};color:${calColor[1]};" title="${title}" onclick="event.stopPropagation();openEditSeance(${s.id})">${label.trim()}</div>`;
     });
 
     html += `</div>`;
@@ -706,6 +733,11 @@ function calNext() {
 function addSeanceOnDay(dateStr) {
   populatePatientSelects();
   document.getElementById('s-date').value = dateStr;
+  document.getElementById('s-edit-id').value = '';
+  if (document.getElementById('s-mode')) document.getElementById('s-mode').value = 'presentiel';
+  if (document.getElementById('s-honoraires')) document.getElementById('s-honoraires').value = state.settings.honorairesDefaut || state.settings.tarifConsultation || '';
+  if (document.getElementById('s-duree')) document.getElementById('s-duree').value = state.settings.dureeAgenda || state.settings.dureeConsultation || 50;
+  _toggleLienVisio('presentiel');
   document.getElementById('modalNewSeance').classList.add('open');
 }
 window.calPrev = calPrev;
@@ -1189,6 +1221,9 @@ function renderStatsOverview(from, to) {
   const tauxRemplissage = seancesPlanifiees > 0 ? Math.round(seancesRealisees/seancesPlanifiees*100) : 0;
   const patActifs = new Set(seancesPeriod.filter(s=>s.patientId).map(s=>s.patientId)).size;
   const panierMoyen = seancesRealisees > 0 ? ca/seancesRealisees : 0;
+  const nbAnnulees = seancesPeriod.filter(s=>s.statut==='annule'||s.statut==='no_show').length;
+  const totalPlanifieesAvecAnnul = seancesPeriod.filter(s=>['planifie','confirme','present','annule','no_show'].includes(s.statut)).length;
+  const tauxAnnulation = totalPlanifieesAvecAnnul > 0 ? Math.round(nbAnnulees/totalPlanifieesAvecAnnul*100) : 0;
 
   const months = last12Months();
   const caByMonth = months.map(m => ({
@@ -1217,7 +1252,7 @@ function renderStatsOverview(from, to) {
       ${kpiCard('Patients actifs', patActifs)}
       ${kpiCard('Taux de remplissage', tauxRemplissage+'%', seancesPlanifiees+' planifiées')}
       ${kpiCard('Revenu net estimé', formatAmount(netRevenu), 'CA – charges – URSSAF', netRevenu>=0?'up':'warning')}
-      ${kpiCard('Panier moyen', formatAmount(panierMoyen), 'par séance réalisée')}
+      ${kpiCard('Taux d\'annulation', tauxAnnulation+'%', nbAnnulees+' annulée(s) / no-show', tauxAnnulation>20?'warning':'')}
     </div>
     <div class="stats-charts-grid">
       ${chartSection('CA mensuel — 12 mois glissants', svgLineChart(caByMonth,{color:'#5a6e5c',label:'€'}))}
@@ -1633,6 +1668,10 @@ function loadSettingsForm() {
   document.getElementById('set-objectif-ca').value = s.objectifCA || '';
   document.getElementById('set-pwa-url').value = s.pwaUrl || '';
   document.getElementById('set-pwa-api-key').value = s.pwaApiKey || '';
+  if (document.getElementById('set-honoraires-defaut')) document.getElementById('set-honoraires-defaut').value = s.honorairesDefaut || '';
+  if (document.getElementById('set-duree-agenda')) document.getElementById('set-duree-agenda').value = s.dureeAgenda || '';
+  if (document.getElementById('set-heure-debut')) document.getElementById('set-heure-debut').value = s.heureDebut || '08:00';
+  if (document.getElementById('set-heure-fin')) document.getElementById('set-heure-fin').value = s.heureFin || '19:00';
 }
 
 async function saveSettings() {
@@ -1651,6 +1690,10 @@ async function saveSettings() {
     objectifCA: parseFloat(document.getElementById('set-objectif-ca').value) || 0,
     pwaUrl: document.getElementById('set-pwa-url').value.trim().replace(/\/$/, ''),
     pwaApiKey: document.getElementById('set-pwa-api-key').value.trim(),
+    honorairesDefaut: parseFloat(document.getElementById('set-honoraires-defaut')?.value) || null,
+    dureeAgenda: parseInt(document.getElementById('set-duree-agenda')?.value) || null,
+    heureDebut: document.getElementById('set-heure-debut')?.value || '08:00',
+    heureFin: document.getElementById('set-heure-fin')?.value || '19:00',
   };
   try {
     await saveSettingsOnly(_db, state.settings, state.nextFactureNum);
@@ -2646,98 +2689,187 @@ window.deleteEngagement = deleteEngagement;
 
 // ===== EXPORT DOSSIER PDF =====
 function exportDossierPDF() {
+  if (!_currentPatientId) return;
+  openModal('modalExportPDF');
+}
+window.exportDossierPDF = exportDossierPDF;
+
+async function genererPDF() {
   const p = state.patients.find(p => p.id === _currentPatientId);
   if (!p) return;
+
+  const optInfos          = document.getElementById('pdf-opt-infos')?.checked ?? true;
+  const optQuestionnaires = document.getElementById('pdf-opt-questionnaires')?.checked ?? true;
+  const optNotes          = document.getElementById('pdf-opt-notes')?.checked ?? true;
+  const optDetailItems    = document.getElementById('pdf-opt-detail-items')?.checked ?? false;
+
+  closeModal('modalExportPDF');
+
   const s = state.settings;
   const praticien = [s.prenom, s.nom].filter(Boolean).join(' ') || 'Praticien';
-  const factures = state.factures.filter(f => f.patientId === p.id);
-  const caTotal = factures.filter(f => f.statut === 'payee').reduce((sum, f) => sum + Number(f.montant), 0);
-  const seancesPatient = state.seances.filter(s => s.patientId === p.id);
-  const datesSeances = seancesPatient.map(s => s.date).sort();
-  const periode = datesSeances.length >= 2
-    ? `${formatDate(datesSeances[0])} – ${formatDate(datesSeances[datesSeances.length - 1])}`
-    : datesSeances.length === 1 ? formatDate(datesSeances[0]) : '—';
+  const dateGen = formatDate(today());
+  const seancesPatient = state.seances.filter(se => se.patientId === p.id);
+  const datesSeances = seancesPatient.map(se => se.date).sort();
+  const debutSuivi = datesSeances.length ? formatDate(datesSeances[0]) : '—';
 
-  const notes = (p.notes || []).slice().sort((a, b) => a.date.localeCompare(b.date));
+  // Données async
+  const [anamnese, resultats, documents] = await Promise.all([
+    getAnamnese(_db, String(p.id)),
+    getResultatsByPatient(_db, String(p.id)),
+    getDocumentsByPatient(_db, String(p.id)),
+  ]);
   const objectifs = p.objectifs || { valeurs: {}, objectifs: [], engagements: [] };
-  const phq9 = (p.questionnaires || []).filter(q => q.type === 'phq9').sort((a, b) => a.date.localeCompare(b.date));
-  const gad7 = (p.questionnaires || []).filter(q => q.type === 'gad7').sort((a, b) => a.date.localeCompare(b.date));
 
+  // ── Page de garde ──────────────────────────────────────────────────────────
   let html = `
   <div class="dossier-header">
-    <div class="dossier-praticien">${praticien} — Psychologue${s.rpps ? ' · N° RPPS : ' + s.rpps : ''}${s.adresse ? ' · ' + s.adresse.replace(/\n/g, ', ') : ''}</div>
+    <div style="font-size:11px;color:#888;text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px;">Document confidentiel — dossier de suivi psychologique</div>
     <div class="dossier-patient-name">${p.prenom} ${p.nom}</div>
-    <div style="font-size:12px;color:#555;">
-      ${p.naissance ? 'Né(e) le ' + formatDate(p.naissance) + ' · ' : ''}
-      Dossier créé le ${formatDate(p.dateCreation?.split('T')[0])} · Document généré le ${formatDate(today())}
+    <div style="font-size:12px;color:#555;margin-top:4px;">
+      ${p.naissance ? 'Né(e) le ' + formatDate(p.naissance) + ' · ' : ''}Début de suivi : ${debutSuivi}
     </div>
-  </div>
+    <div style="font-size:11px;color:#888;margin-top:8px;">
+      Document généré le ${dateGen} par ${praticien}, Psychologue${s.rpps ? ' · N° RPPS : ' + s.rpps : ''}${s.adresse ? ' · ' + s.adresse.replace(/\n/g, ', ') : ''}
+    </div>
+  </div>`;
 
-  <div class="dossier-section">
-    <div class="dossier-section-title">Résumé du suivi</div>
-    <table class="dossier-score-table">
-      <tr><th>Séances enregistrées</th><td>${seancesPatient.length}</td><th>Séances facturées</th><td>${factures.length}</td></tr>
-      <tr><th>CA total encaissé</th><td>${formatAmount(caTotal)}</td><th>Période</th><td>${periode}</td></tr>
-      ${p.motif ? `<tr><th>Motif de consultation</th><td colspan="3">${p.motif}</td></tr>` : ''}
-    </table>
-  </div>
+  // ── Section 1 : Informations générales & anamnèse ─────────────────────────
+  if (optInfos) {
+    html += `<div class="dossier-section page-break">
+      <div class="dossier-section-title">1 — Informations générales</div>
+      <table class="dossier-score-table">
+        ${p.naissance ? `<tr><th>Date de naissance</th><td>${formatDate(p.naissance)}</td></tr>` : ''}
+        ${p.motif ? `<tr><th>Motif de consultation</th><td>${p.motif}</td></tr>` : ''}
+        <tr><th>Début de suivi</th><td>${debutSuivi}</td></tr>
+        ${seancesPatient.length ? `<tr><th>Séances enregistrées</th><td>${seancesPatient.length}</td></tr>` : ''}
+        ${p.sourceOrientation ? `<tr><th>Source d'orientation</th><td>${p.sourceOrientation}</td></tr>` : ''}
+      </table>`;
 
-  <div class="dossier-section page-break">
-    <div class="dossier-section-title">Valeurs et objectifs thérapeutiques</div>
-    ${DOMAINES.filter(d => objectifs.valeurs?.[d]).map(d =>
-      `<div style="margin-bottom:8px;font-size:13px;"><strong>${DOMAINE_LABELS[d]} :</strong> ${objectifs.valeurs[d]}</div>`
-    ).join('') || '<div style="color:#888;font-size:13px;">Aucune valeur renseignée.</div>'}
-    ${(objectifs.objectifs || []).length ? `
-      <div style="margin-top:14px;">
-        <table class="dossier-score-table">
-          <thead><tr><th>Objectif</th><th>Domaine</th><th>Statut</th><th>Créé le</th></tr></thead>
-          <tbody>
-            ${objectifs.objectifs.map(o => `<tr><td>${o.intitule}</td><td>${DOMAINE_LABELS[o.domaine]||o.domaine}</td><td>${STATUT_LABELS[o.statut]||o.statut}</td><td>${formatDate(o.dateCreation?.split('T')[0])}</td></tr>`).join('')}
-          </tbody>
-        </table>
-      </div>` : ''}
-  </div>
+    if (anamnese) {
+      const champAnamnese = [
+        ['Motif principal', anamnese.motif_principal],
+        ['Depuis', anamnese.motif_depuis],
+        ['Contexte d\'apparition', anamnese.contexte_apparition],
+        ['Facteurs déclenchants', anamnese.facteurs_declenchants],
+        ['Évolution', anamnese.evolution],
+        ['Antécédents personnels', anamnese.atcd_personnels],
+        ['Antécédents familiaux', anamnese.atcd_familiaux],
+        ['Situation professionnelle', anamnese.situation_pro],
+        ['Situation familiale', anamnese.situation_familiale],
+        ['Orientation thérapeutique', anamnese.orientation_therapeutique],
+        ['Objectifs de prise en charge', anamnese.objectifs_prise_en_charge],
+      ].filter(([, v]) => v);
+      if (champAnamnese.length) {
+        html += `<div style="margin-top:14px;"><div class="dossier-section-title" style="font-size:12px;">Anamnèse</div>
+          <table class="dossier-score-table" style="margin-top:8px;">
+            ${champAnamnese.map(([k, v]) => `<tr><th style="width:35%;">${k}</th><td>${v.replace(/</g, '&lt;')}</td></tr>`).join('')}
+          </table></div>`;
+      }
+    }
+    html += `</div>`;
+  }
 
-  <div class="dossier-section">
-    <div class="dossier-section-title">Scores PHQ-9 (Dépression)</div>
-    ${phq9.length ? `<table class="dossier-score-table">
-      <thead><tr><th>Date</th><th>Score /27</th><th>Interprétation</th></tr></thead>
-      <tbody>${phq9.map(q => `<tr><td>${formatDate(q.date)}</td><td>${q.score}</td><td>${q.interpretation}</td></tr>`).join('')}</tbody>
-    </table>
-    <div style="margin-top:12px;">${buildScoreChart(phq9, 'phq9')}</div>`
-    : '<div style="color:#888;font-size:13px;">Aucune passation enregistrée.</div>'}
-  </div>
+  // ── Section 2 : Questionnaires ────────────────────────────────────────────
+  if (optQuestionnaires) {
+    const slugsAvecResultats = [...new Set(resultats.map(r => r.questionnaire_slug))];
+    html += `<div class="dossier-section page-break">
+      <div class="dossier-section-title">2 — Résultats des questionnaires</div>
+      <div style="font-size:11px;color:#888;margin-bottom:12px;font-style:italic;">Ces outils sont des aides au repérage clinique, non des outils diagnostiques.</div>`;
 
-  <div class="dossier-section">
-    <div class="dossier-section-title">Scores GAD-7 (Anxiété)</div>
-    ${gad7.length ? `<table class="dossier-score-table">
-      <thead><tr><th>Date</th><th>Score /21</th><th>Interprétation</th></tr></thead>
-      <tbody>${gad7.map(q => `<tr><td>${formatDate(q.date)}</td><td>${q.score}</td><td>${q.interpretation}</td></tr>`).join('')}</tbody>
-    </table>
-    <div style="margin-top:12px;">${buildScoreChart(gad7, 'gad7')}</div>`
-    : '<div style="color:#888;font-size:13px;">Aucune passation enregistrée.</div>'}
-  </div>
+    if (!slugsAvecResultats.length) {
+      html += `<div style="color:#888;font-size:13px;">Aucune passation enregistrée via la PWA.</div>`;
+    } else {
+      for (const slug of slugsAvecResultats) {
+        const meta = QUESTIONNAIRE_META[slug] || { label: slug, titre: '', scoreMax: 100 };
+        const rows = resultats.filter(r => r.questionnaire_slug === slug).sort((a, b) => a.date_passation.localeCompare(b.date_passation));
+        html += `<div style="margin-bottom:20px;">
+          <div class="dossier-section-title" style="font-size:12px;">${meta.label} — ${meta.titre}</div>
+          <table class="dossier-score-table" style="margin-top:8px;">
+            <thead><tr><th>Date</th><th>Score</th><th>Interprétation</th><th>Évolution</th></tr></thead>
+            <tbody>${rows.map((r, i) => {
+              const prev = i > 0 ? rows[i - 1] : null;
+              let delta = '—';
+              if (prev && r.score_total !== null && prev.score_total !== null) {
+                const d = r.score_total - prev.score_total;
+                delta = (d > 0 ? '↑ +' : d < 0 ? '↓ ' : '→ ') + d;
+              }
+              return `<tr><td>${formatDate(r.date_passation.slice(0,10))}</td><td>${r.score_total ?? '—'} / ${meta.scoreMax}</td><td>${r.interpretation || '—'}</td><td>${delta}</td></tr>`;
+            }).join('')}</tbody>
+          </table>
+          <div style="margin-top:10px;">${buildEvolutionSvgForPrint(rows, meta)}</div>
+        </div>`;
+      }
+    }
+    html += `</div>`;
+  }
 
-  <div class="dossier-section page-break">
-    <div class="dossier-section-title">Notes cliniques</div>
-    ${notes.length ? notes.map(n => `
-      <div class="dossier-note">
-        <div class="dossier-note-meta">${formatDate(n.date)} · ${NOTE_TEMPLATE_LABELS[n.template] || n.template}</div>
-        <div class="dossier-note-content">${(n.contenu || '').replace(/</g, '&lt;')}</div>
-      </div>`).join('')
-    : '<div style="color:#888;font-size:13px;">Aucune note clinique enregistrée.</div>'}
-  </div>
+  // ── Section 3 : Notes cliniques & objectifs ACT ───────────────────────────
+  if (optNotes) {
+    const notes = (p.notes || []).slice().sort((a, b) => a.date.localeCompare(b.date));
+    html += `<div class="dossier-section page-break">
+      <div class="dossier-section-title">3 — Notes cliniques</div>
+      ${notes.length ? notes.map(n => `
+        <div class="dossier-note">
+          <div class="dossier-note-meta">${formatDate(n.date)} · ${NOTE_TEMPLATE_LABELS[n.template] || n.template}</div>
+          <div class="dossier-note-content">${(n.contenu || '').replace(/</g, '&lt;')}</div>
+        </div>`).join('')
+      : '<div style="color:#888;font-size:13px;">Aucune note clinique enregistrée.</div>'}`;
 
-  <div class="dossier-footer">
-    Document confidentiel — Secret professionnel (art. 226-13 Code pénal)<br>
-    Données de santé soumises au RGPD — usage exclusivement clinique
+    // Objectifs ACT
+    if ((objectifs.objectifs || []).length || Object.values(objectifs.valeurs || {}).some(Boolean)) {
+      html += `<div style="margin-top:18px;"><div class="dossier-section-title" style="font-size:12px;">Objectifs ACT</div>
+        ${DOMAINES.filter(d => objectifs.valeurs?.[d]).map(d =>
+          `<div style="font-size:13px;margin:4px 0;"><strong>${DOMAINE_LABELS[d]} :</strong> ${objectifs.valeurs[d]}</div>`
+        ).join('')}
+        ${(objectifs.objectifs || []).length ? `<table class="dossier-score-table" style="margin-top:8px;">
+          <thead><tr><th>Objectif</th><th>Statut</th></tr></thead>
+          <tbody>${objectifs.objectifs.map(o => `<tr><td>${o.intitule}</td><td>${STATUT_LABELS[o.statut]||o.statut}</td></tr>`).join('')}</tbody>
+        </table>` : ''}
+      </div>`;
+    }
+    html += `</div>`;
+  }
+
+  // ── Section 4 : Documents générés ────────────────────────────────────────
+  html += `<div class="dossier-section">
+    <div class="dossier-section-title">4 — Documents générés</div>
+    ${documents.length ? `<table class="dossier-score-table">
+      <thead><tr><th>Titre</th><th>Type</th><th>Date</th><th>Statut</th></tr></thead>
+      <tbody>${documents.map(d => `<tr><td>${d.titre}</td><td>${d.type}</td><td>${formatDate(d.date_creation.slice(0,10))}</td><td>${d.statut}</td></tr>`).join('')}</tbody>
+    </table>`
+    : '<div style="color:#888;font-size:13px;">Aucun document généré.</div>'}
+  </div>`;
+
+  // ── Pied de page ──────────────────────────────────────────────────────────
+  html += `<div class="dossier-footer">
+    Document généré par PsyGest le ${dateGen} — Usage clinique exclusif<br>
+    Secret professionnel (art. 226-13 Code pénal) · Données de santé soumises au RGPD
   </div>`;
 
   document.getElementById('print-container').innerHTML = html;
   window.print();
-  setTimeout(() => { document.getElementById('print-container').innerHTML = ''; }, 2000);
+  setTimeout(() => { document.getElementById('print-container').innerHTML = ''; }, 2500);
 }
-window.exportDossierPDF = exportDossierPDF;
+window.genererPDF = genererPDF;
+
+function buildEvolutionSvgForPrint(rows, meta) {
+  if (rows.length < 1) return '';
+  const W = 460, H = 120, PAD = { t: 10, r: 16, b: 28, l: 32 };
+  const iW = W - PAD.l - PAD.r, iH = H - PAD.t - PAD.b;
+  const scoreMax = meta.scoreMax;
+  const xScale = i => rows.length === 1 ? PAD.l + iW / 2 : PAD.l + (i / (rows.length - 1)) * iW;
+  const yScale = v => PAD.t + iH - (v / scoreMax) * iH;
+  const points = rows.map((r, i) => ({ x: xScale(i), y: yScale(r.score_total ?? 0), score: r.score_total, date: r.date_passation.slice(5, 10) }));
+  const polyline = points.map(p => `${p.x},${p.y}`).join(' ');
+  const circles = points.map(p => `<circle cx="${p.x}" cy="${p.y}" r="4" fill="#2c6b4f" stroke="white" stroke-width="1.5"><title>${p.date} — ${p.score}</title></circle>`).join('');
+  const xLabels = points.map(p => `<text x="${p.x}" y="${H - 4}" text-anchor="middle" font-size="9" fill="#888">${p.date}</text>`).join('');
+  return `<svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:${W}px;">
+    <line x1="${PAD.l}" y1="${PAD.t}" x2="${PAD.l}" y2="${PAD.t+iH}" stroke="#ccc" stroke-width="1"/>
+    <line x1="${PAD.l}" y1="${PAD.t+iH}" x2="${PAD.l+iW}" y2="${PAD.t+iH}" stroke="#ccc" stroke-width="1"/>
+    <polyline points="${polyline}" fill="none" stroke="#2c6b4f" stroke-width="2"/>
+    ${circles}${xLabels}
+  </svg>`;
+}
 
 // ===== ANAMNÈSE =====
 let _currentTraitements = [];
@@ -4192,6 +4324,26 @@ function renderEvolutionSlug(slug, resultats) {
   const seuilY = meta.seuilAlerte ? PAD.t + yScale(meta.seuilAlerte) : null;
   const seuilLine = seuilY ? `<line x1="${PAD.l}" y1="${seuilY}" x2="${W - PAD.r}" y2="${seuilY}" stroke="var(--color-warning)" stroke-width="1" stroke-dasharray="4,3" opacity="0.7"/>` : '';
 
+  // Marqueurs de séances du patient actuel dans la plage de dates
+  const patientSeances = _currentPatientId
+    ? state.seances.filter(s => s.patientId === _currentPatientId && (s.statut === 'present' || s.statut === 'planifie' || s.statut === 'confirme'))
+    : [];
+  const dateMin = sorted[0].date_passation.slice(0, 10);
+  const dateMax = sorted[sorted.length - 1].date_passation.slice(0, 10);
+  const xFromDate = dateStr => {
+    if (sorted.length < 2) return PAD.l + innerW / 2;
+    const t0 = new Date(dateMin).getTime(), t1 = new Date(dateMax).getTime();
+    const t = new Date(dateStr).getTime();
+    if (t1 === t0) return PAD.l + innerW / 2;
+    return PAD.l + ((t - t0) / (t1 - t0)) * innerW;
+  };
+  const seanceMarkers = patientSeances
+    .filter(s => s.date >= dateMin && s.date <= dateMax)
+    .map(s => {
+      const x = xFromDate(s.date);
+      return `<line x1="${x}" y1="${PAD.t}" x2="${x}" y2="${PAD.t + innerH}" stroke="#2c6b4f" stroke-width="1" stroke-dasharray="3,3" opacity="0.45"><title>Séance du ${formatDate(s.date)}</title></line>`;
+    }).join('');
+
   const circles = points.map(p => `
     <circle cx="${p.x}" cy="${p.y}" r="5" fill="var(--color-primary)" stroke="white" stroke-width="2">
       <title>${p.date} — Score ${p.score} — ${p.interp}</title>
@@ -4202,6 +4354,7 @@ function renderEvolutionSlug(slug, resultats) {
 
   const svg = `<svg viewBox="0 0 ${W} ${H}" style="width:100%;max-width:${W}px;display:block;overflow:visible;">
     ${seuilLine}
+    ${seanceMarkers}
     <polyline points="${polyline}" fill="none" stroke="var(--color-primary)" stroke-width="2"/>
     ${circles}
     ${xLabels}
@@ -4219,11 +4372,15 @@ function renderEvolutionSlug(slug, resultats) {
       const arrow = delta > 0 ? '↑' : delta < 0 ? '↓' : '→';
       deltaHtml = `<span style="color:${color};font-weight:600;">${arrow} ${delta > 0 ? '+' : ''}${delta}</span>`;
     }
+    const consentBadge = r.consentement_recueilli
+      ? `<span style="color:var(--color-success);font-size:var(--text-xs);">✓</span>`
+      : `<span style="color:var(--color-text-muted);font-size:var(--text-xs);">—</span>`;
     return `<tr>
       <td>${formatDate(r.date_passation.slice(0,10))}</td>
       <td><strong>${r.score_total ?? '—'}</strong></td>
       <td style="font-size:var(--text-xs);">${r.interpretation || '—'}</td>
       <td>${deltaHtml}</td>
+      <td style="text-align:center;">${consentBadge}</td>
     </tr>`;
   }).join('');
 
@@ -4232,7 +4389,7 @@ function renderEvolutionSlug(slug, resultats) {
     <div style="margin:var(--space-3) 0;">${svg}</div>
     <div class="table-container">
       <table>
-        <thead><tr><th>Date</th><th>Score</th><th>Interprétation</th><th>Évolution</th></tr></thead>
+        <thead><tr><th>Date</th><th>Score</th><th>Interprétation</th><th>Évolution</th><th style="text-align:center;" title="Consentement RGPD recueilli">RGPD</th></tr></thead>
         <tbody>${lignes}</tbody>
       </table>
     </div>
@@ -4273,6 +4430,7 @@ async function synchroniserResultats() {
         interpretation: r.interpretation || null,
         detailsJson,
         synchroDate: now,
+        consentementRecueilli: r.consentement_recueilli ? 1 : 0,
       });
 
       await updateQuestionnaireCodeStatut(_db, r.code, 'complété', r.date_passation);

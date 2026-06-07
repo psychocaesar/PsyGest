@@ -196,6 +196,10 @@ async function applySchema(db) {
   const migrations = [
     'ALTER TABLE patients ADD COLUMN source_orientation TEXT',
     'ALTER TABLE pwa_codes ADD COLUMN imported INTEGER DEFAULT 0',
+    'ALTER TABLE questionnaire_resultats ADD COLUMN consentement_recueilli INTEGER DEFAULT 0',
+    'ALTER TABLE seances ADD COLUMN mode TEXT DEFAULT \'presentiel\'',
+    'ALTER TABLE seances ADD COLUMN honoraires REAL',
+    'ALTER TABLE seances ADD COLUMN lien_visio TEXT',
   ];
   for (const sql of migrations) {
     try { await db.execute(sql); } catch (_) {}
@@ -234,6 +238,8 @@ export async function loadAll(db) {
   if (settings.tarifConsultation) settings.tarifConsultation = parseFloat(settings.tarifConsultation);
   if (settings.dureeConsultation) settings.dureeConsultation = parseInt(settings.dureeConsultation);
   if (settings.objectifCA) settings.objectifCA = parseFloat(settings.objectifCA);
+  if (settings.honorairesDefaut) settings.honorairesDefaut = parseFloat(settings.honorairesDefaut) || null;
+  if (settings.dureeAgenda) settings.dureeAgenda = parseInt(settings.dureeAgenda) || null;
 
   // nextFactureNum
   const nextFactureNum = parseInt(settings._nextFactureNum || '1');
@@ -317,6 +323,9 @@ export async function loadAll(db) {
     note: row.note_ics || '',
     uid: row.uid || null,
     noteInterne: row.note_interne || '',
+    mode: row.mode || 'presentiel',
+    honoraires: row.honoraires ?? null,
+    lienVisio: row.lien_visio || '',
   }));
 
   // Factures → camelCase
@@ -385,6 +394,10 @@ function buildSettingsPairs(settings, nextFactureNum) {
     ['objectifCA', String(s.objectifCA ?? 0)],
     ['pwaUrl', s.pwaUrl || ''],
     ['pwaApiKey', s.pwaApiKey || ''],
+    ['honorairesDefaut', String(s.honorairesDefaut ?? '')],
+    ['dureeAgenda', String(s.dureeAgenda ?? '')],
+    ['heureDebut', s.heureDebut || '08:00'],
+    ['heureFin', s.heureFin || '19:00'],
     ['_nextFactureNum', String(nextFactureNum ?? 1)],
     ['_derniereSynchro', s._derniereSynchro || ''],
   ];
@@ -472,13 +485,14 @@ async function saveSeancesAll(db, seances) {
   await db.execute('DELETE FROM seances');
   for (const s of seances) {
     await db.execute(
-      `INSERT INTO seances (id,patient_id,date,heure,duree,type,statut,facture,note_ics,uid,note_interne)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+      `INSERT INTO seances (id,patient_id,date,heure,duree,type,statut,facture,note_ics,uid,note_interne,mode,honoraires,lien_visio)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       [
         String(s.id), s.patientId ? String(s.patientId) : null, s.date,
         s.heure || null, s.duree || 50, s.type || 'individuel',
         s.statut || 'planifie', s.facture ? 1 : 0,
         s.note || null, s.uid || null, s.noteInterne || null,
+        s.mode || 'presentiel', s.honoraires ?? null, s.lienVisio || null,
       ]
     );
   }
@@ -774,16 +788,16 @@ export async function expireQuestionnaireCodesLocally(db) {
 
 // ─── Questionnaire Résultats (Phase 3) ────────────────────────────────────────
 
-export async function insertQuestionnaireResultat(db, { patientId, slug, code, datePassation, scoreTotal, interpretation, detailsJson, synchroDate }) {
+export async function insertQuestionnaireResultat(db, { patientId, slug, code, datePassation, scoreTotal, interpretation, detailsJson, synchroDate, consentementRecueilli = 0 }) {
   const existing = await db.select(
     `SELECT id FROM questionnaire_resultats WHERE code = ?`, [code]
   );
   if (existing.length) return; // déjà importé
   await db.execute(
     `INSERT INTO questionnaire_resultats
-       (patient_id, questionnaire_slug, code, date_passation, score_total, interpretation, details_json, synchro_date)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    [patientId, slug, code, datePassation, scoreTotal, interpretation, detailsJson, synchroDate]
+       (patient_id, questionnaire_slug, code, date_passation, score_total, interpretation, details_json, synchro_date, consentement_recueilli)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [patientId, slug, code, datePassation, scoreTotal, interpretation, detailsJson, synchroDate, consentementRecueilli ? 1 : 0]
   );
 }
 

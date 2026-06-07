@@ -409,6 +409,28 @@
           <div class="form-hint">Utilisé pour la barre de progression sur le tableau de bord.</div>
         </div>
 
+        <div class="settings-section-title" style="margin-top:var(--space-6);">Agenda</div>
+        <div class="form-row" style="margin-bottom:var(--space-4);">
+          <div class="form-group">
+            <label for="set-honoraires-defaut">Honoraires par défaut (€)</label>
+            <input class="form-input" id="set-honoraires-defaut" type="number" step="1" min="0" placeholder="60">
+          </div>
+          <div class="form-group">
+            <label for="set-duree-agenda">Durée séance par défaut (min)</label>
+            <input class="form-input" id="set-duree-agenda" type="number" step="5" min="15" placeholder="50">
+          </div>
+        </div>
+        <div class="form-row" style="margin-bottom:var(--space-4);">
+          <div class="form-group">
+            <label for="set-heure-debut">Heure de début de journée</label>
+            <input class="form-input" id="set-heure-debut" type="time" value="08:00">
+          </div>
+          <div class="form-group">
+            <label for="set-heure-fin">Heure de fin de journée</label>
+            <input class="form-input" id="set-heure-fin" type="time" value="19:00">
+          </div>
+        </div>
+
         <div class="settings-section-title" style="margin-top:var(--space-6);">Sauvegarde &amp; Export</div>
         <div class="export-actions">
           <button class="btn btn-secondary" onclick="exportData()"><i data-lucide="download"></i> Exporter (JSON)</button>
@@ -786,13 +808,25 @@
         <div class="form-group"><label for="s-duree">Durée (min)</label><input class="form-input" id="s-duree" type="number" value="50" step="5"></div>
       </div>
       <div class="form-row">
-        <div class="form-group"><label for="s-type">Type</label>
+        <div class="form-group"><label for="s-mode">Mode</label>
+          <select class="form-select" id="s-mode" onchange="_toggleLienVisio(this.value)">
+            <option value="presentiel">Présentiel</option>
+            <option value="visio">Visio</option>
+            <option value="telephone">Téléphone</option>
+          </select>
+        </div>
+        <div class="form-group"><label for="s-type">Nature</label>
           <select class="form-select" id="s-type">
             <option value="individuel">Individuel</option>
             <option value="couple">Couple</option>
             <option value="famille">Famille</option>
             <option value="bilan">Bilan psychologique</option>
           </select>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label for="s-honoraires">Honoraires (€)</label>
+          <input class="form-input" id="s-honoraires" type="number" min="0" step="1" placeholder="60">
         </div>
         <div class="form-group"><label for="s-statut">Statut</label>
           <select class="form-select" id="s-statut">
@@ -801,11 +835,16 @@
             <option value="present">Présent ✓</option>
             <option value="absent">Absent</option>
             <option value="annule">Annulé</option>
+            <option value="no_show">No-show</option>
           </select>
         </div>
       </div>
-      <div class="form-group"><label for="s-note">Note interne</label>
-        <input class="form-input" id="s-note-seance" placeholder="Motif d'annulation, remarque…">
+      <div class="form-group" id="s-lien-visio-group" style="display:none;">
+        <label for="s-lien-visio">Lien visio</label>
+        <input class="form-input" id="s-lien-visio" type="url" placeholder="https://meet.google.com/…">
+      </div>
+      <div class="form-group"><label for="s-note">Note rapide</label>
+        <input class="form-input" id="s-note-seance" placeholder="Note courte post-séance…">
       </div>
       <input type="hidden" id="s-edit-id">
     </div>
@@ -860,6 +899,41 @@
     <div class="modal-footer">
       <button class="btn btn-secondary" onclick="closeModal('modalNewObjectif')">Annuler</button>
       <button class="btn btn-primary" onclick="saveObjectif()"><i data-lucide="save"></i> Enregistrer</button>
+    </div>
+  </div>
+</div>
+
+<!-- MODAL : Export PDF dossier -->
+<div class="modal-overlay" id="modalExportPDF">
+  <div class="modal" style="max-width:440px;">
+    <div class="modal-header">
+      <h2 class="modal-title">Exporter le dossier (PDF)</h2>
+      <button class="icon-btn" onclick="closeModal('modalExportPDF')"><i data-lucide="x"></i></button>
+    </div>
+    <div class="modal-body">
+      <p style="font-size:var(--text-sm);color:var(--color-text-muted);">Sélectionnez les sections à inclure :</p>
+      <div class="form-group" style="gap:var(--space-3);">
+        <label style="display:flex;align-items:center;gap:var(--space-2);font-size:var(--text-sm);cursor:pointer;">
+          <input type="checkbox" id="pdf-opt-infos" checked style="accent-color:var(--color-primary);width:1rem;height:1rem;">
+          Informations générales et anamnèse
+        </label>
+        <label style="display:flex;align-items:center;gap:var(--space-2);font-size:var(--text-sm);cursor:pointer;">
+          <input type="checkbox" id="pdf-opt-questionnaires" checked style="accent-color:var(--color-primary);width:1rem;height:1rem;">
+          Résultats des questionnaires et graphiques
+        </label>
+        <label style="display:flex;align-items:center;gap:var(--space-2);font-size:var(--text-sm);cursor:pointer;">
+          <input type="checkbox" id="pdf-opt-notes" checked style="accent-color:var(--color-primary);width:1rem;height:1rem;">
+          Notes cliniques et objectifs ACT
+        </label>
+        <label style="display:flex;align-items:center;gap:var(--space-2);font-size:var(--text-sm);cursor:pointer;">
+          <input type="checkbox" id="pdf-opt-detail-items" style="accent-color:var(--color-primary);width:1rem;height:1rem;">
+          Inclure les scores détaillés item par item
+        </label>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('modalExportPDF')">Annuler</button>
+      <button class="btn btn-primary" id="btn-generer-pdf" onclick="genererPDF()"><i data-lucide="file-down"></i> Générer le PDF</button>
     </div>
   </div>
 </div>
