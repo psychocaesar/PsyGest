@@ -348,8 +348,9 @@ function apercuFacture(id) {
   const patient = state.patients.find(p => p.id === f.patientId);
   const s = state.settings;
   const nomPraticien = [s.prenom, s.nom].filter(Boolean).join(' ') || 'Praticien';
-  const tva = 'Non soumis à TVA (Art. 261-4-1° du CGI)';
+  const tva = 'TVA non applicable — art. 261-4-1° du Code général des impôts';
   const origine = f.type === 'avoir' ? state.factures.find(o => String(o.id) === String(f.factureOrigineId)) : null;
+  const reglement = f.statut === 'payee' ? 'Réglée' : 'Paiement à réception de la facture';
 
   document.getElementById('apercu-content').innerHTML = `
     <div class="invoice-preview" id="print-zone">
@@ -358,7 +359,7 @@ function apercuFacture(id) {
           <strong>${escapeHtml(nomPraticien)}</strong>
           Psychologue<br>
           ${s.adresse ? escapeHtml(s.adresse).replace(/\n/g, '<br>') + '<br>' : ''}
-          ${s.rpps ? 'N° RPPS : ' + escapeHtml(s.rpps) + '<br>' : ''}
+          ${s.rpps ? 'N° RPPS : ' + escapeHtml(s.rpps) + '<br>' : '<span style="color:var(--color-error);font-weight:600;">⚠ N° RPPS manquant — mention obligatoire, à renseigner dans Réglages</span><br>'}
           ${s.siret ? 'SIRET : ' + escapeHtml(s.siret) + '<br>' : ''}
           ${s.tel ? 'Tél : ' + escapeHtml(s.tel) : ''}
         </div>
@@ -394,6 +395,7 @@ function apercuFacture(id) {
         <div class="total-line"><span>TVA</span><span>${tva}</span></div>
         <div class="total-line total-ttc"><span>TOTAL TTC</span><span>${formatAmount(f.montant)}</span></div>
       </div>
+      <div style="font-size:12px;color:#888;margin-top:var(--space-2);">Conditions de règlement : ${reglement}.</div>
       <div class="invoice-footer">
         <strong>Psychologue — ${tva}</strong><br>
         Numérotation chronologique continue sans trou — Conforme art. L441-3 Code de commerce.<br>
@@ -499,7 +501,7 @@ async function sendByEmail(id) {
     `  Montant TTC : ${formatAmount(f.montant)}`,
     `  Statut : ${f.statut === 'payee' ? 'Payée' : 'En attente de paiement'}`,
     '',
-    'Non soumis à TVA (Art. 261-4-1° du CGI).',
+    'TVA non applicable — art. 261-4-1° du Code général des impôts.',
     '',
     `Cordialement,`,
     praticien,
