@@ -4234,7 +4234,7 @@ async function genererCode() {
 
   const pwaUrl = (state.settings.pwaUrl || '').trim();
   const lien = `${pwaUrl}?code=${code}`;
-  const expStr = expiration.toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric' });
+  const expStr = new Date(dateExpiration).toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric' });
 
   document.getElementById('qi-result').innerHTML = `
     <div class="code-result-box">
@@ -4495,14 +4495,27 @@ function renderEvolutionSlug(slug, resultats) {
 
 // ── Synchronisation des résultats ─────────────────────────────────────────────
 
+// Le champ "severity" renvoyé par le Pi est soit une chaîne simple ("Léger"),
+// soit un objet JSON encodé en chaîne pour les questionnaires à sous-scores
+// (ex. HAD, LSAS, IESR) — on en extrait un libellé lisible dans les deux cas.
+function interpretationDepuisSeverity(raw) {
+  if (!raw) return null;
+  try {
+    const obj = JSON.parse(raw);
+    if (obj && typeof obj === 'object' && obj.label) return obj.label;
+  } catch (_) {}
+  return raw;
+}
+
 async function synchroniserResultats() {
   const btn = document.querySelector('[onclick="synchroniserResultats()"]');
   if (btn) { btn.disabled = true; btn.innerHTML = '<i data-lucide="loader"></i> Synchronisation…'; lucide.createIcons(); }
 
   try {
-    const derniereSynchro = state.settings._derniereSynchro || '';
-    const path = derniereSynchro ? `/api/resultats?since=${encodeURIComponent(derniereSynchro)}` : '/api/resultats';
-    const resultats = await piRequest(path);
+    // Le Pi ne filtre que sur son propre statut "exported" (pas de paramètre
+    // "since" côté serveur) : on ne récupère que ce qui n'a jamais été marqué
+    // exporté, puis on marque explicitement ce qu'on a réellement importé.
+    const resultats = await piRequest('/api/resultats');
 
     if (!resultats.length) {
       toast('Aucun nouveau résultat sur le Pi.');
@@ -4511,36 +4524,53 @@ async function synchroniserResultats() {
 
     const now = new Date().toISOString();
     let importes = 0;
+    const idsExportes = [];
 
     for (const r of resultats) {
       const codeRow = await getQuestionnaireCodeByCode(_db, r.code);
-      if (!codeRow) continue;
+      if (!codeRow) continue; // résultat sans code connu localement (ex. donnée de test côté Pi) — on ne le marque pas exporté, il resera visible au prochain essai
 
-      const detailsJson = r.details ? JSON.stringify(r.details) : null;
+      const slug = (r.questionnaire || '').toLowerCase();
+      const datePassation = r.submitted_at ? new Date(r.submitted_at * 1000).toISOString() : now;
+      const interpretation = interpretationDepuisSeverity(r.severity);
+      let itemScores = null;
+      try { itemScores = r.answers ? JSON.parse(r.answers) : null; } catch (_) {}
 
       await insertQuestionnaireResultat(_db, {
         patientId: codeRow.patient_id,
-        slug: r.questionnaire_slug,
+        slug,
         code: r.code,
-        datePassation: r.date_passation,
-        scoreTotal: r.score_total ?? null,
-        interpretation: r.interpretation || null,
-        detailsJson,
+        datePassation,
+        scoreTotal: r.score ?? null,
+        interpretation,
+        detailsJson: r.answers || null,
         synchroDate: now,
         consentementRecueilli: r.consentement_recueilli ? 1 : 0,
       });
 
-      await updateQuestionnaireCodeStatut(_db, r.code, 'complété', r.date_passation);
+      await updateQuestionnaireCodeStatut(_db, r.code, 'complété', datePassation);
 
       // Alertes de détérioration
-      await verifierAlertes(_db, codeRow.patient_id, r);
+      await verifierAlertes(_db, codeRow.patient_id, {
+        questionnaire_slug: slug,
+        code: r.code,
+        date_passation: datePassation,
+        score_total: r.score ?? null,
+        details: itemScores ? { item_scores: itemScores } : null,
+      });
 
+      idsExportes.push(r.id);
       importes++;
     }
 
-    // Stocker date synchro (ciblé, pas de verrou global)
-    state.settings._derniereSynchro = now;
-    await saveSettingsOnly(_db, state.settings, state.nextFactureNum);
+    // Marque côté Pi les résultats réellement importés, pour ne plus les
+    // re-télécharger à la prochaine synchro.
+    if (idsExportes.length) {
+      await piRequest('/api/resultats/exporter', {
+        method: 'POST',
+        body: JSON.stringify({ ids: idsExportes }),
+      });
+    }
 
     toast(`${importes} résultat${importes > 1 ? 's' : ''} synchronisé${importes > 1 ? 's' : ''} ✓`);
     await renderOngletQuestionnaires();
