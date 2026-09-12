@@ -221,20 +221,19 @@ async function applySchema(db) {
  * Les données cliniques (notes, questionnaires, objectifs) sont incluses par patient.
  */
 export async function loadAll(db) {
-  const [
-    settingsRows, patientRows, seanceRows,
-    factureRows, chargeRows,
-    noteRows, questionnaireRows, objectifRows,
-  ] = await Promise.all([
-    db.select('SELECT key, value FROM settings'),
-    db.select('SELECT * FROM patients WHERE actif = 1 ORDER BY nom, prenom'),
-    db.select('SELECT * FROM seances ORDER BY date DESC, heure DESC'),
-    db.select('SELECT * FROM factures ORDER BY date DESC'),
-    db.select('SELECT * FROM charges ORDER BY date DESC'),
-    db.select('SELECT * FROM notes_cliniques ORDER BY date DESC'),
-    db.select('SELECT * FROM questionnaires ORDER BY date ASC'),
-    db.select('SELECT * FROM objectifs'),
-  ]);
+  // Requêtes séquentielles (pas de Promise.all) : avec un pool de connexions,
+  // des lectures concurrentes peuvent ouvrir plusieurs connexions SQLite en
+  // parallèle, dont certaines sans le PRAGMA busy_timeout posé après coup sur
+  // la première — ça provoque un "database is locked" si une écriture
+  // survient en même temps (ex. autoBackup() au démarrage + création patient).
+  const settingsRows = await db.select('SELECT key, value FROM settings');
+  const patientRows = await db.select('SELECT * FROM patients WHERE actif = 1 ORDER BY nom, prenom');
+  const seanceRows = await db.select('SELECT * FROM seances ORDER BY date DESC, heure DESC');
+  const factureRows = await db.select('SELECT * FROM factures ORDER BY date DESC');
+  const chargeRows = await db.select('SELECT * FROM charges ORDER BY date DESC');
+  const noteRows = await db.select('SELECT * FROM notes_cliniques ORDER BY date DESC');
+  const questionnaireRows = await db.select('SELECT * FROM questionnaires ORDER BY date ASC');
+  const objectifRows = await db.select('SELECT * FROM objectifs');
 
   // Settings → objet
   const settings = {};
@@ -586,12 +585,10 @@ export async function saveAnamnese(db, patientId, data) {
 
 export async function searchAll(db, query) {
   const like = `%${query}%`;
-  const [patients, notes, factures, seances] = await Promise.all([
-    db.select(`SELECT id, nom, prenom FROM patients WHERE LOWER(nom || ' ' || prenom) LIKE LOWER(?) AND actif = 1 LIMIT 5`, [like]),
-    db.select(`SELECT id, patient_id, date, template, contenu FROM notes_cliniques WHERE LOWER(contenu) LIKE LOWER(?) ORDER BY date DESC LIMIT 5`, [like]),
-    db.select(`SELECT id, numero, date, montant, statut, patient_id FROM factures WHERE LOWER(numero) LIKE LOWER(?) LIMIT 5`, [like]),
-    db.select(`SELECT id, date, heure, patient_id, type FROM seances WHERE date LIKE ? OR note_ics LIKE ? LIMIT 5`, [like, like]),
-  ]);
+  const patients = await db.select(`SELECT id, nom, prenom FROM patients WHERE LOWER(nom || ' ' || prenom) LIKE LOWER(?) AND actif = 1 LIMIT 5`, [like]);
+  const notes = await db.select(`SELECT id, patient_id, date, template, contenu FROM notes_cliniques WHERE LOWER(contenu) LIKE LOWER(?) ORDER BY date DESC LIMIT 5`, [like]);
+  const factures = await db.select(`SELECT id, numero, date, montant, statut, patient_id FROM factures WHERE LOWER(numero) LIKE LOWER(?) LIMIT 5`, [like]);
+  const seances = await db.select(`SELECT id, date, heure, patient_id, type FROM seances WHERE date LIKE ? OR note_ics LIKE ? LIMIT 5`, [like, like]);
   return { patients, notes, factures, seances };
 }
 
@@ -728,24 +725,19 @@ export async function deletePatientCascade(db, patientId) {
 
 /** Sérialise toutes les tables en un objet JSON exportable. */
 export async function exportAllData(db) {
-  const [
-    patients, factures, seances, charges, settingsRows, notes, questionnaires, objectifs,
-    anamnese, documents, questionnaire_codes, questionnaire_resultats, alertes_questionnaires,
-  ] = await Promise.all([
-    db.select('SELECT * FROM patients'),
-    db.select('SELECT * FROM factures'),
-    db.select('SELECT * FROM seances'),
-    db.select('SELECT * FROM charges'),
-    db.select('SELECT key, value FROM settings'),
-    db.select('SELECT * FROM notes_cliniques'),
-    db.select('SELECT * FROM questionnaires'),
-    db.select('SELECT * FROM objectifs'),
-    db.select('SELECT * FROM anamnese'),
-    db.select('SELECT * FROM documents'),
-    db.select('SELECT * FROM questionnaire_codes'),
-    db.select('SELECT * FROM questionnaire_resultats'),
-    db.select('SELECT * FROM alertes_questionnaires'),
-  ]);
+  const patients = await db.select('SELECT * FROM patients');
+  const factures = await db.select('SELECT * FROM factures');
+  const seances = await db.select('SELECT * FROM seances');
+  const charges = await db.select('SELECT * FROM charges');
+  const settingsRows = await db.select('SELECT key, value FROM settings');
+  const notes = await db.select('SELECT * FROM notes_cliniques');
+  const questionnaires = await db.select('SELECT * FROM questionnaires');
+  const objectifs = await db.select('SELECT * FROM objectifs');
+  const anamnese = await db.select('SELECT * FROM anamnese');
+  const documents = await db.select('SELECT * FROM documents');
+  const questionnaire_codes = await db.select('SELECT * FROM questionnaire_codes');
+  const questionnaire_resultats = await db.select('SELECT * FROM questionnaire_resultats');
+  const alertes_questionnaires = await db.select('SELECT * FROM alertes_questionnaires');
   const settings = Object.fromEntries(settingsRows.map(r => [r.key, r.value]));
   return {
     patients, factures, seances, charges, settings, notes, questionnaires, objectifs,

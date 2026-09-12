@@ -54,7 +54,10 @@ async function loadState() {
       // Affiche la notification après le premier rendu
       setTimeout(() => toast('Migration effectuée — vos données ont été importées dans la nouvelle base de données ✓'), 800);
     }
-    autoBackup(_db).catch(e => console.error('autoBackup:', e)); // best-effort, non bloquant
+    // Attendu (pas fire-and-forget) : une sauvegarde en tâche de fond en concurrence
+    // avec une écriture (ex. création d'un patient juste après le lancement) peut
+    // faire échouer l'écriture avec "database is locked".
+    try { await autoBackup(_db); } catch (e) { console.error('autoBackup:', e); }
     return state.patients.length > 0 || state.factures.length > 0 || migrated;
   } catch (e) {
     console.error('loadState:', e);
@@ -74,6 +77,8 @@ async function saveState() {
     } catch (e) {
       console.error('saveState:', e);
       toast('Erreur lors de la sauvegarde.', 'error');
+      const detail = (e && (e.message || String(e))) || 'erreur inconnue';
+      dialogMessage(`Détail technique (à transmettre si besoin) :\n\n${detail}`, { title: 'Échec de la sauvegarde', kind: 'error' });
     }
   });
   return _saveMutex;
@@ -2806,11 +2811,9 @@ async function genererPDF() {
   const debutSuivi = datesSeances.length ? formatDate(datesSeances[0]) : '—';
 
   // Données async
-  const [anamnese, resultats, documents] = await Promise.all([
-    getAnamnese(_db, String(p.id)),
-    getResultatsByPatient(_db, String(p.id)),
-    getDocumentsByPatient(_db, String(p.id)),
-  ]);
+  const anamnese = await getAnamnese(_db, String(p.id));
+  const resultats = await getResultatsByPatient(_db, String(p.id));
+  const documents = await getDocumentsByPatient(_db, String(p.id));
   const objectifs = p.objectifs || { valeurs: {}, objectifs: [], engagements: [] };
 
   // ── Page de garde ──────────────────────────────────────────────────────────
