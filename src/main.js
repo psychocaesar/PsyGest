@@ -14,7 +14,7 @@ const DEFAULT_SETTINGS = {
   adresse: '',
   tel: '',
   email: '',
-  tauxUrssaf: 23.2,
+  tauxUrssaf: 42,
   tarifConsultation: 60,
   dureeConsultation: 50,
   calendlyUrl: '',
@@ -195,7 +195,7 @@ function formatNum(n) { return 'FAC-' + new Date().getFullYear() + '-' + String(
 function formatDate(d) { if (!d) return '—'; return new Date(d + 'T12:00:00').toLocaleDateString('fr-FR'); }
 function formatAmount(a) { return Number(a).toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' €'; }
 function getInitials(prenom, nom) { return ((prenom || '')[0] || '') + ((nom || '')[0] || '').toUpperCase(); }
-function urssafRate() { return (state.settings.tauxUrssaf ?? 23.2) / 100; }
+function urssafRate() { return (state.settings.tauxUrssaf ?? 42) / 100; }
 
 // Taux TVA applicable aux analyses de pratiques professionnelles (prestation distincte
 // des actes de soin, exonérés de TVA au titre de l'art. 261-4-1° du CGI).
@@ -1088,9 +1088,10 @@ const catLabels = { loyer: 'Loyer', materiel: 'Matériel', formation: 'Formation
 
 function refreshCharges() {
   const ca = state.factures.filter(f => f.statut === 'payee').reduce((s, f) => s + factureMontants(f).ht, 0);
-  const urssaf = ca * urssafRate();
   const totalCharges = state.charges.reduce((s, c) => s + Number(c.montant), 0);
-  const net = ca - urssaf - totalCharges;
+  const beneficeAvantCotisations = ca - totalCharges;
+  const urssaf = Math.max(0, beneficeAvantCotisations) * urssafRate();
+  const net = beneficeAvantCotisations - urssaf;
   document.getElementById('charges-ca').textContent = formatAmount(ca);
   document.getElementById('charges-urssaf').textContent = formatAmount(urssaf);
   document.getElementById('charges-total').textContent = formatAmount(totalCharges);
@@ -1118,7 +1119,8 @@ function refreshDashboard() {
   const caMonth = facturesMonth.filter(f => f.statut === 'payee').reduce((s, f) => s + factureMontants(f).ht, 0);
   const impayees = state.factures.filter(f => f.statut === 'en_attente');
   const caTotal = state.factures.filter(f => f.statut === 'payee').reduce((s, f) => s + factureMontants(f).ht, 0);
-  const urssaf = caTotal * urssafRate();
+  const totalChargesAll = state.charges.reduce((s, c) => s + Number(c.montant), 0);
+  const urssaf = Math.max(0, caTotal - totalChargesAll) * urssafRate();
 
   document.getElementById('kpi-ca').textContent = formatAmount(caMonth);
   document.getElementById('kpi-seances').textContent = facturesMonth.length;
@@ -1384,7 +1386,7 @@ function renderStatsOverview(from, to) {
   const ca = payees.reduce((s,f)=>s+factureMontants(f).ht,0);
   const chargesPeriod = state.charges.filter(c=>inRange(c.date,from,to));
   const totalCharges = chargesPeriod.reduce((s,c)=>s+Number(c.montant),0);
-  const urssaf = ca * taux;
+  const urssaf = Math.max(0, ca - totalCharges) * taux;
   const netRevenu = ca - totalCharges - urssaf;
   const seancesRealisees = seancesPeriod.filter(s=>s.statut==='present').length;
   const seancesPlanifiees = seancesPeriod.filter(s=>['planifie','confirme','present'].includes(s.statut)).length;
@@ -1503,7 +1505,7 @@ function renderStatsFinancier(from, to) {
   const ca = payees.reduce((s,f)=>s+factureMontants(f).ht,0);
   const chargesPeriod = state.charges.filter(c=>inRange(c.date,from,to));
   const totalCharges = chargesPeriod.reduce((s,c)=>s+Number(c.montant),0);
-  const urssaf = ca * taux;
+  const urssaf = Math.max(0, ca - totalCharges) * taux;
   const net = ca - totalCharges - urssaf;
   const impayeesAll = state.factures.filter(f=>f.statut==='en_attente');
   const montantImpayees = impayeesAll.reduce((s,f)=>s+Number(f.montant),0);
@@ -1520,7 +1522,7 @@ function renderStatsFinancier(from, to) {
   const stackData = months.map(m => {
     const mCA = state.factures.filter(f=>f.statut==='payee'&&inRange(f.date,m.from,m.to)).reduce((s,f)=>s+factureMontants(f).ht,0);
     const mCharges = state.charges.filter(c=>inRange(c.date,m.from,m.to)).reduce((s,c)=>s+Number(c.montant),0);
-    return { l:m.l, ca:mCA, charges:mCharges, urssaf:mCA*taux };
+    return { l:m.l, ca:mCA, charges:mCharges, urssaf:Math.max(0, mCA-mCharges)*taux };
   });
   const netByMonth = months.map(m=>{
     const d = stackData[months.indexOf(m)];
@@ -1579,7 +1581,7 @@ function renderStatsFinancier(from, to) {
       </div>
     </div>` : ''}
     <div class="stats-chart-section">
-      <div class="stats-chart-title">Déclaration URSSAF trimestrielle</div>
+      <div class="stats-chart-title">Estimation trimestrielle CA / cotisations</div>
       <div style="display:flex;gap:var(--space-3);align-items:center;flex-wrap:wrap;margin-bottom:var(--space-4);">
         <select class="form-select" id="urssaf-q" style="max-width:120px;" onchange="renderUrssafTrimestriel()">
           <option value="1">T1 (Jan–Mar)</option>
@@ -1615,8 +1617,9 @@ function renderUrssafTrimestriel() {
     return s && s.type==='entreprise';
   }).reduce((s,f)=>s+factureMontants(f).ht,0);
   const caTotal = facPeriod.reduce((s,f)=>s+factureMontants(f).ht,0);
-  const cotisations = caTotal * taux;
-  const deadlines = {1:'30 avril',2:'31 juillet',3:'31 octobre',4:'31 janvier N+1'};
+  const chargesPeriodTrim = state.charges.filter(c=>inRange(c.date,from,to)).reduce((s,c)=>s+Number(c.montant),0);
+  const beneficeTrim = caTotal - chargesPeriodTrim;
+  const cotisations = Math.max(0, beneficeTrim) * taux;
 
   const el = document.getElementById('urssaf-trim-display');
   if (!el) return;
@@ -1625,11 +1628,11 @@ function renderUrssafTrimestriel() {
       ${kpiCard('CA séances individuelles (HT)', formatAmount(caIndiv))}
       ${kpiCard('CA entreprise (HT)', formatAmount(caEntreprise))}
       ${kpiCard('CA total T'+q+' '+y+' (HT)', formatAmount(caTotal))}
-      ${kpiCard('Cotisations dues', formatAmount(cotisations), `taux ${(taux*100).toFixed(1)}%`,'warning')}
+      ${kpiCard('Cotisations estimées', formatAmount(cotisations), `${(taux*100).toFixed(1)}% du bénéfice`,'warning')}
     </div>
     <div class="alert alert-warning">
-      <i data-lucide="calendar"></i>
-      <div>Date limite de déclaration T${q} : <strong>${deadlines[q]}</strong> — sur <a href="https://www.autoentrepreneur.urssaf.fr" target="_blank" style="color:inherit;">autoentrepreneur.urssaf.fr</a></div>
+      <i data-lucide="info"></i>
+      <div>Estimation indicative — en régime réel BNC, les cotisations sont réellement calculées et appelées par l'URSSAF via des acomptes provisionnels (basés sur ton revenu N-1/N-2) puis régularisées, pas déclarées trimestriellement sur le CA comme en micro-entreprise. Vérifie l'échéancier réel avec ton comptable ou sur secu-independants.fr.</div>
     </div>
     <button class="btn btn-secondary btn-sm" onclick="exportURSSAFTrimestriel(${q},${y})">
       <i data-lucide="download"></i> Exporter CSV
@@ -1665,9 +1668,12 @@ async function exportURSSAFTrimestriel(q, y) {
         seance?.type||'individuel'];
     });
     const caTotal = facPeriod.reduce((s,f)=>s+factureMontants(f).ht,0);
+    const chargesPeriodExp = state.charges.filter(c=>inRange(c.date,from,to)).reduce((s,c)=>s+Number(c.montant),0);
+    const beneficeExp = Math.max(0, caTotal - chargesPeriodExp);
     const summary = [
       [], ['CA HT TOTAL T'+q+' '+y, '', '', '', '', '', String(caTotal).replace('.',','), ''],
-      ['COTISATIONS URSSAF ESTIMÉES', '', '', '', '', '', String(Math.round(caTotal*taux*100)/100).replace('.',','), ''],
+      ['CHARGES T'+q+' '+y, '', '', '', '', '', String(chargesPeriodExp).replace('.',','), ''],
+      ['COTISATIONS ESTIMÉES (% du bénéfice, indicatif)', '', '', '', '', '', String(Math.round(beneficeExp*taux*100)/100).replace('.',','), ''],
     ];
     const csv = '﻿' + [headers,...rows,...summary]
       .map(r=>r.map(v=>`"${String(v||'').replace(/"/g,'""')}"`).join(';'))
@@ -1777,8 +1783,9 @@ async function export2035() {
   const catTotals = {};
   chargesAnno.forEach(c=>{ const k=catLabels[c.cat]||c.cat; catTotals[k]=(catTotals[k]||0)+Number(c.montant); });
   const totalChargesAnn = chargesAnno.reduce((a,c)=>a+Number(c.montant),0);
-  const urssafAnn = totalAnnuel.total * taux;
-  const netAnn = totalAnnuel.total - totalChargesAnn - urssafAnn;
+  const beneficeAvantCotisationsAnn = totalAnnuel.total - totalChargesAnn;
+  const urssafAnn = Math.max(0, beneficeAvantCotisationsAnn) * taux;
+  const netAnn = beneficeAvantCotisationsAnn - urssafAnn;
 
   const html = `<!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8">
   <style>
@@ -1815,11 +1822,13 @@ async function export2035() {
     </tbody>
   </table>
 
-  <h2>C — Cotisations URSSAF estimées</h2>
-  <p>CA annuel : ${formatAmount(totalAnnuel.total)} × ${(taux*100).toFixed(1)} % = <strong>${formatAmount(urssafAnn)}</strong></p>
+  <h2>C — Cotisations sociales estimées</h2>
+  <p>Bénéfice avant cotisations : ${formatAmount(totalAnnuel.total)} (recettes) − ${formatAmount(totalChargesAnn)} (charges) = ${formatAmount(beneficeAvantCotisationsAnn)}<br>
+  Cotisations estimées : ${formatAmount(beneficeAvantCotisationsAnn)} × ${(taux*100).toFixed(1)} % = <strong>${formatAmount(urssafAnn)}</strong></p>
+  <p style="font-size:8pt;color:#666;">En régime réel BNC, les cotisations réellement appelées par l'URSSAF suivent un système d'acomptes provisionnels (basés sur le revenu N-1/N-2) puis de régularisation — ce calcul est une estimation à taux constant sur le bénéfice de l'année, pas le montant réellement exigible dans l'année.</p>
 
-  <h2>D — Résultat net estimé</h2>
-  <p>${formatAmount(totalAnnuel.total)} − ${formatAmount(totalChargesAnn)} − ${formatAmount(urssafAnn)} = <strong>${formatAmount(netAnn)}</strong></p>
+  <h2>D — Résultat net estimé (avant impôt sur le revenu)</h2>
+  <p>${formatAmount(beneficeAvantCotisationsAnn)} − ${formatAmount(urssafAnn)} = <strong>${formatAmount(netAnn)}</strong></p>
 
   <div class="footer">Document préparatoire établi à partir des données saisies dans PsyGest. À vérifier avec votre comptable ou l'URSSAF avant déclaration officielle.</div>
   </body></html>`;
@@ -1840,7 +1849,7 @@ function loadSettingsForm() {
   document.getElementById('set-adresse').value = s.adresse || '';
   document.getElementById('set-tel').value = s.tel || '';
   document.getElementById('set-email').value = s.email || '';
-  document.getElementById('set-taux-urssaf').value = s.tauxUrssaf ?? 23.2;
+  document.getElementById('set-taux-urssaf').value = s.tauxUrssaf ?? 42;
   document.getElementById('set-tarif').value = s.tarifConsultation ?? 60;
   document.getElementById('set-duree').value = s.dureeConsultation ?? 50;
   document.getElementById('set-objectif-ca').value = s.objectifCA || '';
@@ -1862,7 +1871,7 @@ async function saveSettings() {
     adresse: document.getElementById('set-adresse').value.trim(),
     tel: document.getElementById('set-tel').value.trim(),
     email: document.getElementById('set-email').value.trim(),
-    tauxUrssaf: parseFloat(document.getElementById('set-taux-urssaf').value) || 23.2,
+    tauxUrssaf: parseFloat(document.getElementById('set-taux-urssaf').value) || 42,
     tarifConsultation: parseFloat(document.getElementById('set-tarif').value) || 60,
     dureeConsultation: parseInt(document.getElementById('set-duree').value) || 50,
     objectifCA: parseFloat(document.getElementById('set-objectif-ca').value) || 0,

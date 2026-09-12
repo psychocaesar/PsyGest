@@ -168,7 +168,7 @@
     </div>
     <div class="charges-bar">
       <div class="charges-title">⚠️ Charges URSSAF estimées (rappel)</div>
-      <p style="font-size:var(--text-sm);color:var(--color-text-muted);margin-bottom:var(--space-3);">Les charges URSSAF peuvent représenter plusieurs centaines d'euros par mois, même en début d'activité. Provisionnez environ 23,2 % de votre CA (HT).</p>
+      <p style="font-size:var(--text-sm);color:var(--color-text-muted);margin-bottom:var(--space-3);">Les cotisations sociales peuvent représenter plusieurs centaines d'euros par mois, même en début d'activité. Provisionnez environ 42 % de votre bénéfice (CA − charges).</p>
       <div class="bar-track"><div class="bar-fill" id="urssaf-bar" style="width:0%"></div></div>
       <div class="bar-labels"><span id="urssaf-montant">0 € provisionnés</span><span id="urssaf-ca">sur 0 € CA</span></div>
     </div>
@@ -298,7 +298,7 @@
     <h2 class="section-title" style="margin-bottom:var(--space-6);">Charges &amp; URSSAF</h2>
     <div class="alert alert-warning">
       <i data-lucide="alert-circle"></i>
-      <div>Les charges URSSAF peuvent représenter <strong>plusieurs centaines d'euros par mois</strong>, même au début de l'activité. Provisionnez environ 23,2 % de votre CA (HT) — taux CIPAV professions libérales réglementées.</div>
+      <div>Les cotisations sociales peuvent représenter <strong>plusieurs centaines d'euros par mois</strong>, même au début de l'activité. Provisionnez environ 42 % de votre bénéfice (CA − charges) — régime réel BNC, CIPAV professions libérales réglementées.</div>
     </div>
     <div class="kpi-grid">
       <div class="kpi-card"><div class="kpi-label">CA total (HT)</div><div class="kpi-value" id="charges-ca">0 €</div><div class="kpi-sub">toutes périodes</div></div>
@@ -410,9 +410,9 @@
       <div>
         <div class="settings-section-title">Paramètres de facturation</div>
         <div class="form-group" style="margin-bottom:var(--space-4);">
-          <label for="set-taux-urssaf">Taux URSSAF (%)</label>
-          <input class="form-input" id="set-taux-urssaf" type="number" step="0.1" min="0" max="100" value="23.2">
-          <div class="form-hint">23,2 % pour les professions libérales réglementées relevant de la CIPAV (psychologues, 2026) — 25,4 % avec versement libératoire de l'impôt. Ajustez selon votre situation réelle.</div>
+          <label for="set-taux-urssaf">Taux de cotisations sociales (% du bénéfice)</label>
+          <input class="form-input" id="set-taux-urssaf" type="number" step="0.1" min="0" max="100" value="42">
+          <div class="form-hint">Régime réel BNC (CIPAV) : les cotisations se calculent sur le bénéfice (CA − charges), pas sur le CA — environ 42 % en régime de croisière, mais varie fortement selon le revenu (barème progressif) et suit un système d'acomptes/régularisation. Ajustez selon les chiffres réels donnés par ton comptable ou l'URSSAF.</div>
         </div>
         <div class="form-row" style="margin-bottom:var(--space-4);">
           <div class="form-group">
