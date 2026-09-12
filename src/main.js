@@ -3282,6 +3282,21 @@ function toggleShortcutsPanel() {
 }
 window.toggleShortcutsPanel = toggleShortcutsPanel;
 
+function closeShortcutsPanel() {
+  const panel = document.getElementById('shortcuts-panel');
+  if (panel) panel.style.display = 'none';
+}
+
+// Ferme au clic extérieur — sans ça le panneau reste ouvert indéfiniment et
+// masque la colonne de navigation (il est en position fixed par-dessus).
+document.addEventListener('click', e => {
+  const panel = document.getElementById('shortcuts-panel');
+  const btn = document.getElementById('shortcuts-btn');
+  if (panel && panel.style.display !== 'none' && !panel.contains(e.target) && e.target !== btn) {
+    closeShortcutsPanel();
+  }
+});
+
 document.addEventListener('keydown', e => {
   const ctrl = e.ctrlKey || e.metaKey;
   if (ctrl && e.key === 'k') {
@@ -3292,6 +3307,8 @@ document.addEventListener('keydown', e => {
   if (e.key === 'Escape') {
     const openModal = document.querySelector('.modal-overlay.open');
     if (openModal) { openModal.classList.remove('open'); return; }
+    const shortcutsPanel = document.getElementById('shortcuts-panel');
+    if (shortcutsPanel && shortcutsPanel.style.display !== 'none') { closeShortcutsPanel(); return; }
     hideSearchResults();
     return;
   }
