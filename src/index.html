@@ -6,9 +6,30 @@
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
 <meta http-equiv="Pragma" content="no-cache">
 <title>PsyGest – Gestion libérale</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=DM+Sans:wght@300..700&display=swap" rel="stylesheet">
+<style>
+  /* Polices hébergées localement (100 % hors-ligne — voir src/public/assets/fonts) */
+  @font-face {
+    font-family: 'DM Sans';
+    font-style: normal;
+    font-weight: 300 700;
+    font-display: swap;
+    src: url('/assets/fonts/dm-sans-latin.woff2') format('woff2');
+  }
+  @font-face {
+    font-family: 'Instrument Serif';
+    font-style: normal;
+    font-weight: 400;
+    font-display: swap;
+    src: url('/assets/fonts/instrument-serif-normal-latin.woff2') format('woff2');
+  }
+  @font-face {
+    font-family: 'Instrument Serif';
+    font-style: italic;
+    font-weight: 400;
+    font-display: swap;
+    src: url('/assets/fonts/instrument-serif-italic-latin.woff2') format('woff2');
+  }
+</style>
 <link rel="stylesheet" href="/style.css?v=2">
 <script src="/assets/lucide.min.js"></script>
 </head>
@@ -786,6 +807,32 @@
       </div>
     </div>
     <div class="modal-body" id="apercu-content"></div>
+  </div>
+</div>
+
+<!-- MODAL AVOIR (annulation de facture) -->
+<div class="modal-overlay" id="modalAvoir">
+  <div class="modal">
+    <div class="modal-header">
+      <h2 class="modal-title">Émettre un avoir</h2>
+      <button class="icon-btn" onclick="closeModal('modalAvoir')"><i data-lucide="x"></i></button>
+    </div>
+    <div class="modal-body">
+      <div class="form-hint" style="margin-bottom:var(--space-3);">
+        Une facture émise ne peut ni être supprimée ni modifiée (numérotation légale sans trou).
+        Pour corriger une erreur, un avoir annule la facture d'origine pour son montant total ;
+        vous pourrez ensuite créer une nouvelle facture correcte si besoin.
+      </div>
+      <div id="avoir-facture-summary" class="card" style="margin-bottom:var(--space-3);background:var(--color-surface-offset);"></div>
+      <div class="form-group">
+        <label for="av-motif">Motif de l'avoir *</label>
+        <textarea class="form-textarea" id="av-motif" placeholder="Ex. : montant erroné, mauvais patient…"></textarea>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('modalAvoir')">Annuler</button>
+      <button class="btn btn-danger" onclick="saveAvoir()"><i data-lucide="rotate-ccw"></i> Émettre l'avoir</button>
+    </div>
   </div>
 </div>
 

@@ -1,7 +1,7 @@
 import { writeTextFile } from '@tauri-apps/plugin-fs';
 import { open as dialogOpen, save as dialogSave, ask } from '@tauri-apps/plugin-dialog';
 import { openUrl } from '@tauri-apps/plugin-opener';
-import { initDb, loadAll, saveAll, saveSettingsOnly, migrateFromJSON, exportAllData, importAllData, getAnamnese, saveAnamnese, searchAll, getDocuments, getDocumentsByPatient, getDocument, createDocument, updateDocument, deleteDocument as dbDeleteDocument, savePwaCode, loadPwaCodes, markPwaCodeImported, createQuestionnaireCode, getQuestionnaireCodesByPatient, updateQuestionnaireCodeStatut, getQuestionnaireCodeByCode, expireQuestionnaireCodesLocally, insertQuestionnaireResultat, getResultatsByPatient, getResultatsByPatientAndSlug, createAlerteQuestionnaire, getAlertesByPatient, getAlertesNonLues, marquerAlertesLues } from './db.js';
+import { initDb, loadAll, saveAll, saveSettingsOnly, migrateFromJSON, exportAllData, importAllData, getAnamnese, saveAnamnese, searchAll, getDocuments, getDocumentsByPatient, getDocument, createDocument, updateDocument, deleteDocument as dbDeleteDocument, deletePatientCascade, savePwaCode, loadPwaCodes, markPwaCodeImported, createQuestionnaireCode, getQuestionnaireCodesByPatient, updateQuestionnaireCodeStatut, getQuestionnaireCodeByCode, expireQuestionnaireCodesLocally, insertQuestionnaireResultat, getResultatsByPatient, getResultatsByPatientAndSlug, createAlerteQuestionnaire, getAlertesByPatient, getAlertesNonLues, marquerAlertesLues } from './db.js';
 
 // ===== STORAGE CONFIG =====
 let _db = null; // instance SQLite partagée
@@ -163,13 +163,22 @@ function toast(msg, type = 'success') {
   const el = document.createElement('div');
   el.className = 'toast';
   const icon = type === 'success' ? 'check-circle' : type === 'error' ? 'alert-circle' : 'info';
-  el.innerHTML = `<i data-lucide="${icon}"></i>${msg}`;
+  el.innerHTML = `<i data-lucide="${icon}"></i>${escapeHtml(msg)}`;
   document.getElementById('toasts').appendChild(el);
   lucide.createIcons();
   setTimeout(() => el.remove(), 3500);
 }
 
 // ===== HELPERS =====
+// Échappe tout texte non fiable (saisi par le praticien ou importé depuis une source
+// externe — ICS/Calendly, synchro PWA) avant injection dans un template HTML.
+// Toujours utiliser cette fonction plutôt que d'interpoler une chaîne brute dans du
+// innerHTML — aucune CSP n'agit comme filet de sécurité par ailleurs.
+const _escapeHtmlMap = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+function escapeHtml(s) {
+  if (s === null || s === undefined) return '';
+  return String(s).replace(/[&<>"']/g, c => _escapeHtmlMap[c]);
+}
 function today() { return new Date().toISOString().split('T')[0]; }
 function formatNum(n) { return 'FAC-' + new Date().getFullYear() + '-' + String(n).padStart(4, '0'); }
 function formatDate(d) { if (!d) return '—'; return new Date(d + 'T12:00:00').toLocaleDateString('fr-FR'); }
@@ -221,7 +230,7 @@ function populatePatientSelects() {
     const sel = document.getElementById(id);
     if (!sel) return;
     sel.innerHTML = '<option value="">Sélectionner…</option>' +
-      state.patients.map(p => `<option value="${p.id}">${p.prenom} ${p.nom}</option>`).join('');
+      state.patients.map(p => `<option value="${p.id}">${escapeHtml(p.prenom)} ${escapeHtml(p.nom)}</option>`).join('');
   });
 }
 
@@ -262,6 +271,13 @@ let _filterStatus = '';
 window.filterFactures = v => { _filterText = v.toLowerCase(); renderFactures(); };
 window.filterFacturesStatus = v => { _filterStatus = v; renderFactures(); };
 
+function factureBadge(f) {
+  if (f.type === 'avoir') return '<span class="badge badge-muted">Avoir</span>';
+  if (f.statut === 'payee') return '<span class="badge badge-success">Payée</span>';
+  if (f.statut === 'annulee') return '<span class="badge badge-error">Annulée</span>';
+  return '<span class="badge badge-warning">En attente</span>';
+}
+
 function renderFactures() {
   const tbody = document.getElementById('factures-table');
   let factures = state.factures.slice().reverse();
@@ -277,23 +293,20 @@ function renderFactures() {
   }
   tbody.innerHTML = factures.map(f => {
     const patient = state.patients.find(p => p.id === f.patientId);
-    const badge = f.statut === 'payee'
-      ? '<span class="badge badge-success">Payée</span>'
-      : f.statut === 'annulee'
-        ? '<span class="badge badge-error">Annulée</span>'
-        : '<span class="badge badge-warning">En attente</span>';
     const hasEmail = !!(patient && patient.email);
+    const canAvoir = f.type !== 'avoir' && f.statut !== 'annulee';
     return `<tr class="tr-clickable" onclick="apercuFacture(${f.id})">
-      <td><span class="td-name">${f.numero}</span></td>
-      <td>${patient ? `<span class="td-name">${patient.prenom} ${patient.nom}</span>` : '<span style="color:var(--color-text-muted)">—</span>'}</td>
+      <td><span class="td-name">${escapeHtml(f.numero)}</span></td>
+      <td>${patient ? `<span class="td-name">${escapeHtml(patient.prenom)} ${escapeHtml(patient.nom)}</span>` : '<span style="color:var(--color-text-muted)">—</span>'}</td>
       <td>${formatDate(f.date)}</td>
-      <td>${f.prestation}</td>
+      <td>${escapeHtml(f.prestation)}</td>
       <td><strong>${formatAmount(f.montant)}</strong></td>
-      <td>${badge}</td>
+      <td>${factureBadge(f)}</td>
       <td onclick="event.stopPropagation()">
         <button class="btn btn-ghost btn-sm" onclick="apercuFacture(${f.id})" title="Aperçu"><i data-lucide="eye"></i></button>
         ${hasEmail ? `<button class="btn btn-ghost btn-sm" onclick="sendByEmail(${f.id})" title="Envoyer par mail"><i data-lucide="mail"></i></button>` : ''}
-        ${f.statut !== 'payee' ? `<button class="btn btn-ghost btn-sm" onclick="markPaid(${f.id})" title="Marquer payée" style="color:var(--color-success)"><i data-lucide="check"></i></button>` : ''}
+        ${f.statut !== 'payee' && f.statut !== 'annulee' ? `<button class="btn btn-ghost btn-sm" onclick="markPaid(${f.id})" title="Marquer payée" style="color:var(--color-success)"><i data-lucide="check"></i></button>` : ''}
+        ${canAvoir ? `<button class="btn btn-ghost btn-sm" onclick="openAvoirModal(${f.id})" title="Émettre un avoir" style="color:var(--color-error)"><i data-lucide="rotate-ccw"></i></button>` : ''}
       </td>
     </tr>`;
   }).join('');
@@ -301,7 +314,7 @@ function renderFactures() {
 }
 
 async function markPaid(id) {
-  const f = state.factures.find(f => f.id === id);
+  const f = state.factures.find(f => String(f.id) === String(id));
   if (f) {
     f.statut = 'payee';
     await saveState();
@@ -323,36 +336,38 @@ function openNewFactureForPatient(patientId) {
 window.openNewFactureForPatient = openNewFactureForPatient;
 
 function apercuFacture(id) {
-  const f = state.factures.find(f => f.id === id);
+  const f = state.factures.find(f => String(f.id) === String(id));
   if (!f) return;
   _currentApercuId = id;
   const patient = state.patients.find(p => p.id === f.patientId);
   const s = state.settings;
   const nomPraticien = [s.prenom, s.nom].filter(Boolean).join(' ') || 'Praticien';
   const tva = 'Non soumis à TVA (Art. 261-4-1° du CGI)';
+  const origine = f.type === 'avoir' ? state.factures.find(o => String(o.id) === String(f.factureOrigineId)) : null;
 
   document.getElementById('apercu-content').innerHTML = `
     <div class="invoice-preview" id="print-zone">
       <div class="invoice-header">
         <div class="invoice-from">
-          <strong>${nomPraticien}</strong>
+          <strong>${escapeHtml(nomPraticien)}</strong>
           Psychologue<br>
-          ${s.adresse ? s.adresse.replace(/\n/g, '<br>') + '<br>' : ''}
-          ${s.rpps ? 'N° RPPS : ' + s.rpps + '<br>' : ''}
-          ${s.siret ? 'SIRET : ' + s.siret + '<br>' : ''}
-          ${s.tel ? 'Tél : ' + s.tel : ''}
+          ${s.adresse ? escapeHtml(s.adresse).replace(/\n/g, '<br>') + '<br>' : ''}
+          ${s.rpps ? 'N° RPPS : ' + escapeHtml(s.rpps) + '<br>' : ''}
+          ${s.siret ? 'SIRET : ' + escapeHtml(s.siret) + '<br>' : ''}
+          ${s.tel ? 'Tél : ' + escapeHtml(s.tel) : ''}
         </div>
         <div class="invoice-number">
-          <div style="font-size:12px;color:#888;margin-bottom:4px;">FACTURE</div>
-          <div class="inv-num">${f.numero}</div>
+          <div style="font-size:12px;color:#888;margin-bottom:4px;">${f.type === 'avoir' ? 'AVOIR' : 'FACTURE'}</div>
+          <div class="inv-num">${escapeHtml(f.numero)}</div>
           <div style="font-size:12px;color:#888;margin-top:6px;">Date : ${formatDate(f.date)}</div>
           <div style="font-size:12px;color:#888;">Émise le : ${formatDate(f.dateCreation.split('T')[0])}</div>
         </div>
       </div>
+      ${origine ? `<div style="font-size:12px;color:#888;margin-bottom:var(--space-3);">Annule et remplace la facture <strong>${escapeHtml(origine.numero)}</strong> du ${formatDate(origine.date)}.</div>` : ''}
       <div class="invoice-patient">
-        <strong>Patient :</strong> ${patient ? `${patient.prenom} ${patient.nom}` : '—'}
-        ${patient && patient.email ? `<br>Email : ${patient.email}` : ''}
-        ${patient && patient.tel ? `<br>Tél : ${patient.tel}` : ''}
+        <strong>Patient :</strong> ${patient ? `${escapeHtml(patient.prenom)} ${escapeHtml(patient.nom)}` : '—'}
+        ${patient && patient.email ? `<br>Email : ${escapeHtml(patient.email)}` : ''}
+        ${patient && patient.tel ? `<br>Tél : ${escapeHtml(patient.tel)}` : ''}
       </div>
       <table class="invoice-table">
         <thead><tr>
@@ -362,7 +377,7 @@ function apercuFacture(id) {
         </tr></thead>
         <tbody>
           <tr>
-            <td>${f.prestation}</td>
+            <td>${escapeHtml(f.prestation)}</td>
             <td style="text-align:right">${f.duree || 50} min</td>
             <td style="text-align:right">${formatAmount(f.montant)}</td>
           </tr>
@@ -397,13 +412,67 @@ function apercuFacture(id) {
 }
 window.apercuFacture = apercuFacture;
 
+// ===== AVOIR (annulation de facture) =====
+let _avoirFactureId = null;
+
+function openAvoirModal(id) {
+  const f = state.factures.find(f => String(f.id) === String(id));
+  if (!f) return;
+  if (f.type === 'avoir') { toast("Un avoir ne peut pas lui-même faire l'objet d'un avoir.", 'error'); return; }
+  if (f.statut === 'annulee') { toast('Cette facture est déjà annulée par un avoir.', 'error'); return; }
+  _avoirFactureId = f.id;
+  const patient = state.patients.find(p => p.id === f.patientId);
+  document.getElementById('avoir-facture-summary').innerHTML = `
+    <div><strong>${escapeHtml(f.numero)}</strong> — ${patient ? `${escapeHtml(patient.prenom)} ${escapeHtml(patient.nom)}` : '—'}</div>
+    <div style="font-size:var(--text-sm);color:var(--color-text-muted);margin-top:4px;">${escapeHtml(f.prestation)} · ${formatDate(f.date)} · <strong>${formatAmount(f.montant)}</strong></div>
+  `;
+  document.getElementById('av-motif').value = '';
+  openModal('modalAvoir');
+}
+window.openAvoirModal = openAvoirModal;
+
+async function saveAvoir() {
+  const f = state.factures.find(f => String(f.id) === String(_avoirFactureId));
+  if (!f) { closeModal('modalAvoir'); return; }
+  const motif = document.getElementById('av-motif').value.trim();
+  if (!motif) { toast('Le motif est requis.', 'error'); return; }
+
+  const avoir = {
+    id: String(Date.now()),
+    numero: formatNum(state.nextFactureNum),
+    patientId: f.patientId,
+    date: today(),
+    montant: -Math.abs(Number(f.montant)),
+    prestation: `Avoir sur facture ${f.numero} — ${motif}`,
+    duree: f.duree,
+    statut: 'payee',
+    notes: '',
+    dateCreation: new Date().toISOString(),
+    numSeq: state.nextFactureNum,
+    type: 'avoir',
+    factureOrigineId: f.id,
+  };
+  state.factures.push(avoir);
+  state.nextFactureNum++;
+  f.statut = 'annulee';
+
+  await saveState();
+  closeModal('modalAvoir');
+  toast(`Avoir ${avoir.numero} émis — facture ${f.numero} annulée ✓`);
+  refreshSidebarCounts();
+  refreshDashboard();
+  renderFactures();
+  if (_currentPatientId) renderPatientInfos(_currentPatientId);
+}
+window.saveAvoir = saveAvoir;
+
 function sendCurrentFactureByEmail() {
   if (_currentApercuId) sendByEmail(_currentApercuId);
 }
 window.sendCurrentFactureByEmail = sendCurrentFactureByEmail;
 
 async function sendByEmail(id) {
-  const f = state.factures.find(f => f.id === id);
+  const f = state.factures.find(f => String(f.id) === String(id));
   if (!f) return;
   const patient = state.patients.find(p => p.id === f.patientId);
   if (!patient || !patient.email) {
@@ -600,9 +669,10 @@ function renderSeances() {
   const types = { individuel: 'Individuel', couple: 'Couple', famille: 'Famille', bilan: 'Bilan' };
   tbody.innerHTML = seances.map(s => {
     const patient = s.patientId ? state.patients.find(p => p.id === s.patientId) : null;
-    const patientLabel = patient ? `${patient.prenom} ${patient.nom}` : (s.note || '<span style="color:var(--color-text-faint)">—</span>');
+    const patientLabel = patient ? `${escapeHtml(patient.prenom)} ${escapeHtml(patient.nom)}`
+      : (s.note ? escapeHtml(s.note) : '<span style="color:var(--color-text-faint)">—</span>');
     const st = SEANCE_STATUTS[s.statut || 'planifie'] || SEANCE_STATUTS.planifie;
-    const statutBadge = `<span class="badge ${st.badge}">${st.label}</span>`;
+    const statutBadge = `<span class="badge ${st.badge}">${escapeHtml(st.label)}</span>`;
     // Boutons statut rapide
     const sid = String(s.id);
     const quickBtns = s.statut !== 'present'
@@ -617,7 +687,7 @@ function renderSeances() {
     return `<tr>
       <td>${formatDate(s.date)}</td><td>${s.heure || '—'}</td>
       <td>${patientLabel}</td>
-      <td>${types[s.type] || s.type}</td><td>${s.duree} min</td>
+      <td>${escapeHtml(types[s.type] || s.type)}</td><td>${s.duree} min</td>
       <td>${statutBadge}</td>
       <td style="white-space:nowrap;">
         <button class="btn btn-ghost btn-sm" onclick="openEditSeance('${sid}')" title="Modifier"><i data-lucide="pencil"></i></button>
@@ -697,13 +767,13 @@ function renderCalendar() {
     daySeances.forEach(s => {
       const patient = s.patientId ? state.patients.find(p => p.id === s.patientId) : null;
       const label = patient
-        ? `${s.heure || ''} ${patient.prenom[0]}.${patient.nom}`
-        : `${s.heure || ''} ${s.note || 'Rendez-vous'}`;
+        ? `${s.heure || ''} ${escapeHtml(patient.prenom[0])}.${escapeHtml(patient.nom)}`
+        : `${s.heure || ''} ${escapeHtml(s.note || 'Rendez-vous')}`;
       const st = SEANCE_STATUTS[s.statut || 'planifie'] || SEANCE_STATUTS.planifie;
       const calColor = (s.statut === 'annule' || s.statut === 'no_show')
         ? st.cal
         : (SEANCE_MODE_CAL[s.mode] || SEANCE_MODE_CAL.presentiel);
-      const title = `${patient ? patient.prenom + ' ' + patient.nom : (s.note || 'RDV')} – ${s.heure || ''} (${s.duree} min) · ${st.label}`;
+      const title = escapeHtml(`${patient ? patient.prenom + ' ' + patient.nom : (s.note || 'RDV')} – ${s.heure || ''} (${s.duree} min) · ${st.label}`);
       html += `<div class="cal-event" style="background:${calColor[0]};color:${calColor[1]};" title="${title}" onclick="event.stopPropagation();openEditSeance(${s.id})">${label.trim()}</div>`;
     });
 
@@ -928,7 +998,7 @@ function refreshCharges() {
     return;
   }
   tbody.innerHTML = state.charges.slice().reverse().map(c =>
-    `<tr><td>${c.desc}</td><td><span class="badge badge-muted">${catLabels[c.cat] || c.cat}</span></td><td>${formatAmount(c.montant)}</td><td>${formatDate(c.date)}</td><td><button class="btn btn-ghost btn-sm" onclick="deleteCharge(${c.id})" style="color:var(--color-error)"><i data-lucide="trash-2"></i></button></td></tr>`
+    `<tr><td>${escapeHtml(c.desc)}</td><td><span class="badge badge-muted">${escapeHtml(catLabels[c.cat] || c.cat)}</span></td><td>${formatAmount(c.montant)}</td><td>${formatDate(c.date)}</td><td><button class="btn btn-ghost btn-sm" onclick="deleteCharge(${c.id})" style="color:var(--color-error)"><i data-lucide="trash-2"></i></button></td></tr>`
   ).join('');
   lucide.createIcons();
 }
@@ -987,10 +1057,7 @@ function refreshDashboard() {
   }
   tbody.innerHTML = last5.map(f => {
     const patient = state.patients.find(p => p.id === f.patientId);
-    const badge = f.statut === 'payee'
-      ? '<span class="badge badge-success">Payée</span>'
-      : '<span class="badge badge-warning">En attente</span>';
-    return `<tr class="tr-clickable" onclick="apercuFacture(${f.id})"><td>${f.numero}</td><td>${patient ? patient.prenom + ' ' + patient.nom : '—'}</td><td>${formatDate(f.date)}</td><td>${formatAmount(f.montant)}</td><td>${badge}</td></tr>`;
+    return `<tr class="tr-clickable" onclick="apercuFacture(${f.id})"><td>${escapeHtml(f.numero)}</td><td>${patient ? escapeHtml(patient.prenom) + ' ' + escapeHtml(patient.nom) : '—'}</td><td>${formatDate(f.date)}</td><td>${formatAmount(f.montant)}</td><td>${factureBadge(f)}</td></tr>`;
   }).join('');
 }
 
@@ -1078,13 +1145,13 @@ function svgLineChart(data, { width=580, height=180, color='#5a6e5c', label='' }
   }).join('');
   const xLabels = data.map((d,i) => {
     if (i % Math.ceil(data.length/8) !== 0) return '';
-    return `<text x="${xs(i)}" y="${PT+H+14}" text-anchor="middle" font-size="9" fill="#aaa">${d.l}</text>`;
+    return `<text x="${xs(i)}" y="${PT+H+14}" text-anchor="middle" font-size="9" fill="#aaa">${escapeHtml(d.l)}</text>`;
   }).join('');
   return `<svg width="100%" viewBox="0 0 ${width} ${height}" style="display:block;overflow:visible;">
     ${gridLines}
     <polygon points="${area}" fill="${color}" opacity=".12"/>
     <polyline points="${pts}" fill="none" stroke="${color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
-    ${data.map((d,i)=>`<circle cx="${xs(i)}" cy="${ys(d.v)}" r="3" fill="${color}"><title>${d.l}: ${d.v}</title></circle>`).join('')}
+    ${data.map((d,i)=>`<circle cx="${xs(i)}" cy="${ys(d.v)}" r="3" fill="${color}"><title>${escapeHtml(d.l)}: ${d.v}</title></circle>`).join('')}
     ${xLabels}
   </svg>`;
 }
@@ -1102,8 +1169,8 @@ function svgBarChart(data, { width=580, height=180, color='#5a6e5c', label='' } 
   }).join('');
   const bars = data.map((d,i) => {
     const x=PL+i*gap+(gap-bw)/2, bh=(d.v/max)*H, y=PT+H-bh;
-    return `<rect x="${x}" y="${y}" width="${bw}" height="${bh}" fill="${color}" rx="2"><title>${d.l}: ${d.v}</title></rect>
-            <text x="${x+bw/2}" y="${PT+H+14}" text-anchor="middle" font-size="9" fill="#aaa">${d.l}</text>`;
+    return `<rect x="${x}" y="${y}" width="${bw}" height="${bh}" fill="${color}" rx="2"><title>${escapeHtml(d.l)}: ${d.v}</title></rect>
+            <text x="${x+bw/2}" y="${PT+H+14}" text-anchor="middle" font-size="9" fill="#aaa">${escapeHtml(d.l)}</text>`;
   }).join('');
   return `<svg width="100%" viewBox="0 0 ${width} ${height}" style="display:block;overflow:visible;">
     ${gridLines}${bars}
@@ -1124,11 +1191,11 @@ function svgPieChart(data) {
     const x2=cx+r*Math.cos(angle), y2=cy+r*Math.sin(angle);
     return `<path d="M${cx},${cy}L${x1},${y1}A${r},${r},0,${a>Math.PI?1:0},1,${x2},${y2}Z"
       fill="${COLORS[i%COLORS.length]}" stroke="white" stroke-width="1.5">
-      <title>${d.l}: ${d.v} (${Math.round(d.v/total*100)}%)</title></path>`;
+      <title>${escapeHtml(d.l)}: ${d.v} (${Math.round(d.v/total*100)}%)</title></path>`;
   }).join('');
   const legend = nonEmpty.map((d,i) => `<div style="display:flex;align-items:center;gap:6px;font-size:var(--text-xs);">
     <span style="width:10px;height:10px;border-radius:50%;background:${COLORS[i%COLORS.length]};flex-shrink:0;display:inline-block;"></span>
-    <span>${d.l} — ${Math.round(d.v/total*100)}%</span>
+    <span>${escapeHtml(d.l)} — ${Math.round(d.v/total*100)}%</span>
   </div>`).join('');
   return `<div style="display:flex;gap:var(--space-5);align-items:center;flex-wrap:wrap;">
     <svg viewBox="0 0 180 180" style="width:160px;height:160px;flex-shrink:0;">${paths}</svg>
@@ -1155,7 +1222,7 @@ function svgStackedBar(data, { width=580, height=200 } = {}) {
     return `<rect x="${x}" y="${baseY-uH}" width="${bw}" height="${uH}" fill="${C.urssaf}"><title>URSSAF: ${formatAmount(d.urssaf)}</title></rect>
             <rect x="${x}" y="${baseY-uH-cH}" width="${bw}" height="${cH}" fill="${C.charges}"><title>Charges: ${formatAmount(d.charges)}</title></rect>
             <rect x="${x}" y="${baseY-uH-cH-nH}" width="${bw}" height="${nH}" fill="${C.net}" rx="2"><title>Net: ${formatAmount(net)}</title></rect>
-            <text x="${x+bw/2}" y="${PT+H+14}" text-anchor="middle" font-size="9" fill="#aaa">${d.l}</text>`;
+            <text x="${x+bw/2}" y="${PT+H+14}" text-anchor="middle" font-size="9" fill="#aaa">${escapeHtml(d.l)}</text>`;
   }).join('');
   const legend = `<g>
     <rect x="${PL}" y="${height-10}" width="8" height="8" fill="${C.net}"/>
@@ -1369,8 +1436,8 @@ function renderStatsFinancier(from, to) {
     const patient = state.patients.find(p=>p.id===f.patientId);
     const jours = Math.floor((Date.now()-new Date(f.date+'T12:00').getTime())/86400000);
     return `<tr>
-      <td>${patient?patient.prenom+' '+patient.nom:'—'}</td>
-      <td>${f.numero}</td>
+      <td>${patient?escapeHtml(patient.prenom)+' '+escapeHtml(patient.nom):'—'}</td>
+      <td>${escapeHtml(f.numero)}</td>
       <td>${formatDate(f.date)}</td>
       <td>${formatAmount(f.montant)}</td>
       <td><span class="badge badge-${jours>30?'error':'warning'}">${jours}j</span></td>
@@ -1573,7 +1640,7 @@ function renderStatsActivite(from, to) {
 async function export2035() {
   const y = new Date().getFullYear();
   const s = state.settings;
-  const praticien = `${s.prenom||''} ${s.nom||''}`.trim() || 'Praticien';
+  const praticien = escapeHtml(`${s.prenom||''} ${s.nom||''}`.trim() || 'Praticien');
   const taux = urssafRate();
 
   const months = Array.from({length:12},(_,i)=>{
@@ -1617,7 +1684,7 @@ async function export2035() {
   </style></head><body>
   <h1>Préparation déclaration fiscale — Année ${y}</h1>
   <p>${praticien} — Psychologue libéral<br>
-  ${s.siret?'SIRET : '+s.siret+'&nbsp;&nbsp;':''}${s.rpps?'N° RPPS : '+s.rpps:''}</p>
+  ${s.siret?'SIRET : '+escapeHtml(s.siret)+'&nbsp;&nbsp;':''}${s.rpps?'N° RPPS : '+escapeHtml(s.rpps):''}</p>
 
   <h2>A — Recettes</h2>
   <table>
@@ -1632,7 +1699,7 @@ async function export2035() {
   <table>
     <thead><tr><th>Catégorie</th><th>Montant annuel</th></tr></thead>
     <tbody>
-      ${Object.entries(catTotals).map(([k,v])=>`<tr><td>${k}</td><td>${formatAmount(v)}</td></tr>`).join('')}
+      ${Object.entries(catTotals).map(([k,v])=>`<tr><td>${escapeHtml(k)}</td><td>${formatAmount(v)}</td></tr>`).join('')}
       <tr class="total"><td>TOTAL CHARGES</td><td>${formatAmount(totalChargesAnn)}</td></tr>
     </tbody>
   </table>
@@ -1938,8 +2005,8 @@ async function renderPatientDashboard(id) {
       <div class="pd-identity">
         <div class="patient-avatar" style="width:40px;height:40px;font-size:var(--text-sm);flex-shrink:0;">${getInitials(p.prenom, p.nom)}</div>
         <div style="min-width:0;">
-          <div style="font-family:var(--font-display);font-size:var(--text-lg);font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${p.prenom} ${p.nom} ${clotureBadge}</div>
-          <div style="font-size:var(--text-xs);color:var(--color-text-muted);">${age}${p.naissance ? ' · né(e) le ' + formatDate(p.naissance) : ''}${p.tel ? ' · ' + p.tel : ''}${p.email ? ' · ' + p.email : ''}</div>
+          <div style="font-family:var(--font-display);font-size:var(--text-lg);font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(p.prenom)} ${escapeHtml(p.nom)} ${clotureBadge}</div>
+          <div style="font-size:var(--text-xs);color:var(--color-text-muted);">${age}${p.naissance ? ' · né(e) le ' + formatDate(p.naissance) : ''}${p.tel ? ' · ' + escapeHtml(p.tel) : ''}${p.email ? ' · ' + escapeHtml(p.email) : ''}</div>
         </div>
       </div>
       <div class="pd-header-stats">
@@ -2044,17 +2111,21 @@ function renderPatientInfos(id) {
 
   const hasEmail = !!(p && p.email);
   const facturesHTML = factures.length ? factures.map(f => {
-    const badge = f.statut === 'payee'
-      ? '<span class="badge badge-success">Payée</span>'
-      : f.statut === 'annulee'
-        ? '<span class="badge badge-error">Annulée</span>'
-        : '<span class="badge badge-warning">En attente</span>';
+    const canAvoir = f.type !== 'avoir' && f.statut !== 'annulee';
+    let payeeCell;
+    if (f.type === 'avoir' || f.statut === 'annulee') {
+      payeeCell = `<span style="color:var(--color-text-faint);padding:0 var(--space-2);">—</span>`;
+    } else if (f.statut === 'payee') {
+      payeeCell = `<span style="color:var(--color-success);padding:0 var(--space-2);">✓</span>`;
+    } else {
+      payeeCell = `<button class="btn btn-ghost btn-sm" onclick="markPaid(${f.id})" title="Marquer payée" style="color:var(--color-success)"><i data-lucide="check-circle"></i></button>`;
+    }
     return `<tr>
-      <td><span class="td-name">${f.numero}</span></td>
+      <td><span class="td-name">${escapeHtml(f.numero)}</span></td>
       <td>${formatDate(f.date)}</td>
-      <td>${f.prestation}</td>
+      <td>${escapeHtml(f.prestation)}</td>
       <td><strong>${formatAmount(f.montant)}</strong></td>
-      <td>${badge}</td>
+      <td>${factureBadge(f)}</td>
       <td style="text-align:center;">
         <button class="btn btn-ghost btn-sm" onclick="apercuFacture(${f.id})" title="Voir la facture"><i data-lucide="eye"></i></button>
       </td>
@@ -2063,13 +2134,14 @@ function renderPatientInfos(id) {
           ? `<button class="btn btn-ghost btn-sm" onclick="sendByEmail(${f.id})" title="Envoyer par mail" style="color:var(--color-primary)"><i data-lucide="mail"></i></button>`
           : `<span title="Aucun email renseigné" style="color:var(--color-text-faint);padding:0 var(--space-2);">—</span>`}
       </td>
+      <td style="text-align:center;">${payeeCell}</td>
       <td style="text-align:center;">
-        ${f.statut !== 'payee'
-          ? `<button class="btn btn-ghost btn-sm" onclick="markPaid(${f.id})" title="Marquer payée" style="color:var(--color-success)"><i data-lucide="check-circle"></i></button>`
-          : `<span style="color:var(--color-success);padding:0 var(--space-2);">✓</span>`}
+        ${canAvoir
+          ? `<button class="btn btn-ghost btn-sm" onclick="openAvoirModal(${f.id})" title="Émettre un avoir" style="color:var(--color-error)"><i data-lucide="rotate-ccw"></i></button>`
+          : `<span style="color:var(--color-text-faint);padding:0 var(--space-2);">—</span>`}
       </td>
     </tr>`;
-  }).join('') : `<tr><td colspan="8"><div style="padding:var(--space-6);text-align:center;color:var(--color-text-muted);font-size:var(--text-sm);">Aucune facture pour ce patient.</div></td></tr>`;
+  }).join('') : `<tr><td colspan="9"><div style="padding:var(--space-6);text-align:center;color:var(--color-text-muted);font-size:var(--text-sm);">Aucune facture pour ce patient.</div></td></tr>`;
 
   document.getElementById('pd-infos-content').innerHTML = `
     <div style="padding:var(--space-5);border-bottom:1px solid var(--color-divider);">
@@ -2078,7 +2150,7 @@ function renderPatientInfos(id) {
         <div><span style="color:var(--color-text-muted);font-size:var(--text-xs);">Dossier créé le</span><br>${formatDate(p.dateCreation?.split('T')[0])}</div>
         <div><span style="color:var(--color-text-muted);font-size:var(--text-xs);">CA total encaissé</span><br><strong>${formatAmount(caTotal)}</strong></div>
       </div>
-      ${p.motif ? `<div style="margin-top:var(--space-3);font-size:var(--text-sm);"><span style="color:var(--color-text-muted);font-size:var(--text-xs);">Motif de consultation</span><br>${p.motif}</div>` : ''}
+      ${p.motif ? `<div style="margin-top:var(--space-3);font-size:var(--text-sm);"><span style="color:var(--color-text-muted);font-size:var(--text-xs);">Motif de consultation</span><br>${escapeHtml(p.motif)}</div>` : ''}
     </div>
     <div style="padding:var(--space-4) var(--space-5) var(--space-3);display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--color-divider);">
       <div style="font-size:var(--text-xs);font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--color-text-muted);">Factures (${factures.length})</div>
@@ -2090,6 +2162,7 @@ function renderPatientInfos(id) {
         <th style="text-align:center;">Aperçu</th>
         <th style="text-align:center;">Mail</th>
         <th style="text-align:center;">Payée</th>
+        <th style="text-align:center;">Avoir</th>
       </tr></thead>
       <tbody id="pd-factures-tbody">${facturesHTML}</tbody>
     </table>`;
@@ -2111,11 +2184,23 @@ async function deleteCurrentPatient() {
   const p = state.patients.find(p => p.id === _currentPatientId);
   if (!p) return;
   const factures = state.factures.filter(f => f.patientId === p.id);
-  const msg = factures.length
-    ? `Supprimer définitivement le dossier de ${p.prenom} ${p.nom} et ses ${factures.length} facture(s) associée(s) ? Cette action est irréversible.`
-    : `Supprimer définitivement le dossier de ${p.prenom} ${p.nom} ? Cette action est irréversible.`;
+  const detail = factures.length
+    ? `et ses ${factures.length} facture(s) associée(s)`
+    : '';
+  const msg = `Supprimer définitivement le dossier de ${p.prenom} ${p.nom} ${detail} ? ` +
+    `Cette action supprime aussi l'anamnèse, les documents générés (courriers, attestations, comptes-rendus) ` +
+    `et l'historique des questionnaires liés à ce patient. Elle est irréversible.`;
   const confirmed = await ask(msg, { title: 'Confirmer la suppression', kind: 'warning' });
   if (!confirmed) return;
+
+  try {
+    await deletePatientCascade(_db, p.id);
+  } catch (e) {
+    console.error('deleteCurrentPatient:', e);
+    toast('Erreur lors de la suppression du dossier — rien n\'a été supprimé.', 'error');
+    return;
+  }
+
   state.patients = state.patients.filter(p => p.id !== _currentPatientId);
   state.factures = state.factures.filter(f => f.patientId !== _currentPatientId);
   state.seances = state.seances.filter(s => s.patientId !== _currentPatientId);
@@ -2171,14 +2256,14 @@ function renderPatients(filter = '') {
       <div class="patient-card-header">
         <div class="patient-avatar">${getInitials(p.prenom, p.nom)}</div>
         <div style="flex:1;">
-          <div class="patient-name">${p.prenom} ${p.nom}</div>
+          <div class="patient-name">${escapeHtml(p.prenom)} ${escapeHtml(p.nom)}</div>
           <div class="patient-info">${p.naissance ? 'né(e) le ' + formatDate(p.naissance) : 'Date non renseignée'}</div>
         </div>
         ${p.cloture ? '<span class="badge badge-muted" style="flex-shrink:0;">Clôturé</span>' : ''}
         ${unpaidOld.length ? '<span class="badge badge-error" style="font-size:10px;flex-shrink:0;">Impayé</span>' : ''}
         ${daysSinceSeance > 21 && patSeances.length > 0 ? '<span class="badge badge-warning" style="font-size:10px;flex-shrink:0;">Inactif</span>' : ''}
       </div>
-      ${p.tel ? `<div style="font-size:var(--text-xs);color:var(--color-text-muted);margin-bottom:4px;">📞 ${p.tel}</div>` : ''}
+      ${p.tel ? `<div style="font-size:var(--text-xs);color:var(--color-text-muted);margin-bottom:4px;">📞 ${escapeHtml(p.tel)}</div>` : ''}
       <div class="patient-stats">
         <div><div class="patient-stat-label">Séances</div><div class="patient-stat-val">${factures.length}</div></div>
         <div><div class="patient-stat-label">CA total</div><div class="patient-stat-val">${formatAmount(ca)}</div></div>
@@ -2239,11 +2324,11 @@ function renderNotes() {
   }
   const sorted = p.notes.slice().sort((a, b) => b.date.localeCompare(a.date));
   list.innerHTML = sorted.map(n => {
-    const preview = (n.contenu || '').replace(/^#+\s*/gm, '').trim().slice(0, 120);
+    const preview = escapeHtml((n.contenu || '').replace(/^#+\s*/gm, '').trim().slice(0, 120));
     return `<div class="note-card">
       <div class="note-card-header">
         <span class="note-card-date">${formatDate(n.date)}</span>
-        <span class="note-card-template"><span class="badge badge-primary">${NOTE_TEMPLATE_LABELS[n.template] || n.template}</span></span>
+        <span class="note-card-template"><span class="badge badge-primary">${escapeHtml(NOTE_TEMPLATE_LABELS[n.template] || n.template)}</span></span>
       </div>
       <div class="note-card-preview">${preview || '<em>Note vide</em>'}</div>
       <div class="note-card-actions">
@@ -2453,7 +2538,7 @@ function renderQuestionnaires() {
       return `<div class="passation-row">
         <span style="flex:1;">${formatDate(q.date)}</span>
         <strong style="min-width:30px;text-align:right;">${q.score}</strong>
-        <span class="badge" style="background:${interp.color}22;color:${interp.color};">${q.interpretation}</span>
+        <span class="badge" style="background:${interp.color}22;color:${interp.color};">${escapeHtml(q.interpretation)}</span>
         <button class="btn btn-ghost btn-sm" onclick="deletePassation(${q.id})" style="color:var(--color-error);padding:2px 6px;"><i data-lucide="trash-2" style="width:13px;height:13px;"></i></button>
       </div>`;
     }).join('');
@@ -2509,7 +2594,7 @@ function buildScoreChart(passations, type) {
     const x = xScale(i), y = yScale(q.score);
     const interp = type === 'phq9' ? phq9Interpretation(q.score) : gad7Interpretation(q.score);
     svg += `<circle cx="${x}" cy="${y}" r="4" fill="${interp.color}" stroke="white" stroke-width="1.5"/>`;
-    svg += `<title>${formatDate(q.date)}: ${q.score} (${q.interpretation})</title>`;
+    svg += `<title>${formatDate(q.date)}: ${q.score} (${escapeHtml(q.interpretation)})</title>`;
     // X date label (short)
     const d = new Date(q.date + 'T12:00:00');
     const lbl = `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}`;
@@ -2534,8 +2619,8 @@ function renderObjectifs() {
   const valeursGrid = document.getElementById('valeurs-grid');
   valeursGrid.innerHTML = DOMAINES.map(d => `
     <div class="valeur-card">
-      <div class="valeur-domaine">${DOMAINE_LABELS[d]}</div>
-      <textarea class="form-textarea" id="valeur-${d}" placeholder="Ce qui compte pour moi…" rows="3" style="font-size:var(--text-sm);">${(p.objectifs.valeurs && p.objectifs.valeurs[d]) || ''}</textarea>
+      <div class="valeur-domaine">${escapeHtml(DOMAINE_LABELS[d])}</div>
+      <textarea class="form-textarea" id="valeur-${d}" placeholder="Ce qui compte pour moi…" rows="3" style="font-size:var(--text-sm);">${escapeHtml((p.objectifs.valeurs && p.objectifs.valeurs[d]) || '')}</textarea>
     </div>`).join('');
 
   // Objectifs
@@ -2547,12 +2632,12 @@ function renderObjectifs() {
     objList.innerHTML = objs.map(o => `
       <div class="objectif-card">
         <div class="objectif-body">
-          <div class="objectif-title">${o.intitule}</div>
-          <div class="objectif-meta">${DOMAINE_LABELS[o.domaine] || o.domaine} · ${formatDate(o.dateCreation?.split('T')[0])}</div>
-          ${o.notes ? `<div style="font-size:var(--text-xs);color:var(--color-text-muted);margin-top:4px;">${o.notes}</div>` : ''}
+          <div class="objectif-title">${escapeHtml(o.intitule)}</div>
+          <div class="objectif-meta">${escapeHtml(DOMAINE_LABELS[o.domaine] || o.domaine)} · ${formatDate(o.dateCreation?.split('T')[0])}</div>
+          ${o.notes ? `<div style="font-size:var(--text-xs);color:var(--color-text-muted);margin-top:4px;">${escapeHtml(o.notes)}</div>` : ''}
         </div>
         <div style="display:flex;flex-direction:column;gap:var(--space-2);align-items:flex-end;">
-          <span class="badge ${STATUT_COLORS[o.statut] || 'badge-muted'}">${STATUT_LABELS[o.statut] || o.statut}</span>
+          <span class="badge ${STATUT_COLORS[o.statut] || 'badge-muted'}">${escapeHtml(STATUT_LABELS[o.statut] || o.statut)}</span>
           <div style="display:flex;gap:var(--space-1);">
             <button class="btn btn-ghost btn-sm" onclick="editObjectif(${o.id})"><i data-lucide="pencil"></i></button>
             <button class="btn btn-ghost btn-sm" style="color:var(--color-error)" onclick="deleteObjectif(${o.id})"><i data-lucide="trash-2"></i></button>
@@ -2572,7 +2657,7 @@ function renderObjectifs() {
       <div class="engagement-item">
         <input type="checkbox" ${e.realise ? 'checked' : ''} onchange="toggleEngagement(${e.id})">
         <div style="flex:1;">
-          <div class="${e.realise ? 'engagement-done' : ''}">${e.texte}</div>
+          <div class="${e.realise ? 'engagement-done' : ''}">${escapeHtml(e.texte)}</div>
           <div style="font-size:var(--text-xs);color:var(--color-text-muted);">${formatDate(e.date)}</div>
         </div>
         <button class="btn btn-ghost btn-sm" style="color:var(--color-error)" onclick="deleteEngagement(${e.id})"><i data-lucide="trash-2" style="width:13px;height:13px;"></i></button>
@@ -2706,7 +2791,7 @@ async function genererPDF() {
   closeModal('modalExportPDF');
 
   const s = state.settings;
-  const praticien = [s.prenom, s.nom].filter(Boolean).join(' ') || 'Praticien';
+  const praticien = escapeHtml([s.prenom, s.nom].filter(Boolean).join(' ') || 'Praticien');
   const dateGen = formatDate(today());
   const seancesPatient = state.seances.filter(se => se.patientId === p.id);
   const datesSeances = seancesPatient.map(se => se.date).sort();
@@ -2724,12 +2809,12 @@ async function genererPDF() {
   let html = `
   <div class="dossier-header">
     <div style="font-size:11px;color:#888;text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px;">Document confidentiel — dossier de suivi psychologique</div>
-    <div class="dossier-patient-name">${p.prenom} ${p.nom}</div>
+    <div class="dossier-patient-name">${escapeHtml(p.prenom)} ${escapeHtml(p.nom)}</div>
     <div style="font-size:12px;color:#555;margin-top:4px;">
       ${p.naissance ? 'Né(e) le ' + formatDate(p.naissance) + ' · ' : ''}Début de suivi : ${debutSuivi}
     </div>
     <div style="font-size:11px;color:#888;margin-top:8px;">
-      Document généré le ${dateGen} par ${praticien}, Psychologue${s.rpps ? ' · N° RPPS : ' + s.rpps : ''}${s.adresse ? ' · ' + s.adresse.replace(/\n/g, ', ') : ''}
+      Document généré le ${dateGen} par ${praticien}, Psychologue${s.rpps ? ' · N° RPPS : ' + escapeHtml(s.rpps) : ''}${s.adresse ? ' · ' + escapeHtml(s.adresse).replace(/\n/g, ', ') : ''}
     </div>
   </div>`;
 
@@ -2739,10 +2824,10 @@ async function genererPDF() {
       <div class="dossier-section-title">1 — Informations générales</div>
       <table class="dossier-score-table">
         ${p.naissance ? `<tr><th>Date de naissance</th><td>${formatDate(p.naissance)}</td></tr>` : ''}
-        ${p.motif ? `<tr><th>Motif de consultation</th><td>${p.motif}</td></tr>` : ''}
+        ${p.motif ? `<tr><th>Motif de consultation</th><td>${escapeHtml(p.motif)}</td></tr>` : ''}
         <tr><th>Début de suivi</th><td>${debutSuivi}</td></tr>
         ${seancesPatient.length ? `<tr><th>Séances enregistrées</th><td>${seancesPatient.length}</td></tr>` : ''}
-        ${p.sourceOrientation ? `<tr><th>Source d'orientation</th><td>${p.sourceOrientation}</td></tr>` : ''}
+        ${p.sourceOrientation ? `<tr><th>Source d'orientation</th><td>${escapeHtml(p.sourceOrientation)}</td></tr>` : ''}
       </table>`;
 
     if (anamnese) {
@@ -2762,7 +2847,7 @@ async function genererPDF() {
       if (champAnamnese.length) {
         html += `<div style="margin-top:14px;"><div class="dossier-section-title" style="font-size:12px;">Anamnèse</div>
           <table class="dossier-score-table" style="margin-top:8px;">
-            ${champAnamnese.map(([k, v]) => `<tr><th style="width:35%;">${k}</th><td>${v.replace(/</g, '&lt;')}</td></tr>`).join('')}
+            ${champAnamnese.map(([k, v]) => `<tr><th style="width:35%;">${escapeHtml(k)}</th><td>${escapeHtml(v)}</td></tr>`).join('')}
           </table></div>`;
       }
     }
@@ -2783,7 +2868,7 @@ async function genererPDF() {
         const meta = QUESTIONNAIRE_META[slug] || { label: slug, titre: '', scoreMax: 100 };
         const rows = resultats.filter(r => r.questionnaire_slug === slug).sort((a, b) => a.date_passation.localeCompare(b.date_passation));
         html += `<div style="margin-bottom:20px;">
-          <div class="dossier-section-title" style="font-size:12px;">${meta.label} — ${meta.titre}</div>
+          <div class="dossier-section-title" style="font-size:12px;">${escapeHtml(meta.label)} — ${escapeHtml(meta.titre)}</div>
           <table class="dossier-score-table" style="margin-top:8px;">
             <thead><tr><th>Date</th><th>Score</th><th>Interprétation</th><th>Évolution</th></tr></thead>
             <tbody>${rows.map((r, i) => {
@@ -2793,7 +2878,7 @@ async function genererPDF() {
                 const d = r.score_total - prev.score_total;
                 delta = (d > 0 ? '↑ +' : d < 0 ? '↓ ' : '→ ') + d;
               }
-              return `<tr><td>${formatDate(r.date_passation.slice(0,10))}</td><td>${r.score_total ?? '—'} / ${meta.scoreMax}</td><td>${r.interpretation || '—'}</td><td>${delta}</td></tr>`;
+              return `<tr><td>${formatDate(r.date_passation.slice(0,10))}</td><td>${r.score_total ?? '—'} / ${meta.scoreMax}</td><td>${escapeHtml(r.interpretation || '—')}</td><td>${delta}</td></tr>`;
             }).join('')}</tbody>
           </table>
           <div style="margin-top:10px;">${buildEvolutionSvgForPrint(rows, meta)}</div>
@@ -2810,8 +2895,8 @@ async function genererPDF() {
       <div class="dossier-section-title">3 — Notes cliniques</div>
       ${notes.length ? notes.map(n => `
         <div class="dossier-note">
-          <div class="dossier-note-meta">${formatDate(n.date)} · ${NOTE_TEMPLATE_LABELS[n.template] || n.template}</div>
-          <div class="dossier-note-content">${(n.contenu || '').replace(/</g, '&lt;')}</div>
+          <div class="dossier-note-meta">${formatDate(n.date)} · ${escapeHtml(NOTE_TEMPLATE_LABELS[n.template] || n.template)}</div>
+          <div class="dossier-note-content">${escapeHtml(n.contenu)}</div>
         </div>`).join('')
       : '<div style="color:#888;font-size:13px;">Aucune note clinique enregistrée.</div>'}`;
 
@@ -2819,11 +2904,11 @@ async function genererPDF() {
     if ((objectifs.objectifs || []).length || Object.values(objectifs.valeurs || {}).some(Boolean)) {
       html += `<div style="margin-top:18px;"><div class="dossier-section-title" style="font-size:12px;">Objectifs ACT</div>
         ${DOMAINES.filter(d => objectifs.valeurs?.[d]).map(d =>
-          `<div style="font-size:13px;margin:4px 0;"><strong>${DOMAINE_LABELS[d]} :</strong> ${objectifs.valeurs[d]}</div>`
+          `<div style="font-size:13px;margin:4px 0;"><strong>${escapeHtml(DOMAINE_LABELS[d])} :</strong> ${escapeHtml(objectifs.valeurs[d])}</div>`
         ).join('')}
         ${(objectifs.objectifs || []).length ? `<table class="dossier-score-table" style="margin-top:8px;">
           <thead><tr><th>Objectif</th><th>Statut</th></tr></thead>
-          <tbody>${objectifs.objectifs.map(o => `<tr><td>${o.intitule}</td><td>${STATUT_LABELS[o.statut]||o.statut}</td></tr>`).join('')}</tbody>
+          <tbody>${objectifs.objectifs.map(o => `<tr><td>${escapeHtml(o.intitule)}</td><td>${escapeHtml(STATUT_LABELS[o.statut]||o.statut)}</td></tr>`).join('')}</tbody>
         </table>` : ''}
       </div>`;
     }
@@ -2835,7 +2920,7 @@ async function genererPDF() {
     <div class="dossier-section-title">4 — Documents générés</div>
     ${documents.length ? `<table class="dossier-score-table">
       <thead><tr><th>Titre</th><th>Type</th><th>Date</th><th>Statut</th></tr></thead>
-      <tbody>${documents.map(d => `<tr><td>${d.titre}</td><td>${d.type}</td><td>${formatDate(d.date_creation.slice(0,10))}</td><td>${d.statut}</td></tr>`).join('')}</tbody>
+      <tbody>${documents.map(d => `<tr><td>${escapeHtml(d.titre)}</td><td>${escapeHtml(DOC_TYPE_LABELS[d.type] || d.type)}</td><td>${formatDate(d.date_creation.slice(0,10))}</td><td>${escapeHtml(d.statut)}</td></tr>`).join('')}</tbody>
     </table>`
     : '<div style="color:#888;font-size:13px;">Aucun document généré.</div>'}
   </div>`;
@@ -2881,7 +2966,7 @@ async function renderAnamneseTab() {
   if (data) _currentTraitements = data.traitements || [];
   else _currentTraitements = [];
 
-  const v = (key) => (data && data[key]) ? data[key] : '';
+  const v = (key) => escapeHtml((data && data[key]) ? data[key] : '');
   const sel = (key, val) => (data && data[key]) === val ? 'selected' : '';
   const modif = data ? (data.date_modification ? new Date(data.date_modification).toLocaleString('fr-FR') : '—') : '—';
 
@@ -2983,9 +3068,9 @@ function renderTraitements() {
   }
   el.innerHTML = _currentTraitements.map((t, i) => `
     <div class="traitement-row">
-      <input class="form-input" placeholder="Médicament" value="${t.nom || ''}" oninput="_currentTraitements[${i}].nom=this.value">
-      <input class="form-input" placeholder="Posologie" value="${t.posologie || ''}" oninput="_currentTraitements[${i}].posologie=this.value">
-      <input class="form-input" placeholder="Prescripteur" value="${t.prescripteur || ''}" oninput="_currentTraitements[${i}].prescripteur=this.value">
+      <input class="form-input" placeholder="Médicament" value="${escapeHtml(t.nom)}" oninput="_currentTraitements[${i}].nom=this.value">
+      <input class="form-input" placeholder="Posologie" value="${escapeHtml(t.posologie)}" oninput="_currentTraitements[${i}].posologie=this.value">
+      <input class="form-input" placeholder="Prescripteur" value="${escapeHtml(t.prescripteur)}" oninput="_currentTraitements[${i}].prescripteur=this.value">
       <button class="btn btn-ghost btn-sm" style="color:var(--color-error);" onclick="removeTraitement(${i})"><i data-lucide="trash-2"></i></button>
     </div>`).join('');
   lucide.createIcons();
@@ -3053,9 +3138,10 @@ function handleGlobalSearch(query) {
 window.handleGlobalSearch = handleGlobalSearch;
 
 function highlight(text, query) {
-  if (!text || !query) return text || '';
-  const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return String(text).replace(new RegExp(`(${escaped})`, 'gi'), '<mark>$1</mark>');
+  const escapedText = escapeHtml(text || '');
+  if (!text || !query) return escapedText;
+  const escapedQuery = escapeHtml(query).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return escapedText.replace(new RegExp(`(${escapedQuery})`, 'gi'), '<mark>$1</mark>');
 }
 
 function renderSearchResults(data, query) {
@@ -3078,7 +3164,7 @@ function renderSearchResults(data, query) {
       const patient = state.patients.find(pp => pp.id == n.patient_id);
       const preview = (n.contenu || '').replace(/^#+\s*/gm, '').trim().slice(0, 80);
       return `<div class="search-result-item" onclick="openPatient('${n.patient_id}');switchPatientTab('notes');hideSearchResults();document.getElementById('global-search').value='';">
-        <div class="search-result-main">${formatDate(n.date)} · ${patient ? patient.prenom + ' ' + patient.nom : '—'}</div>
+        <div class="search-result-main">${formatDate(n.date)} · ${patient ? escapeHtml(patient.prenom) + ' ' + escapeHtml(patient.nom) : '—'}</div>
         <div class="search-result-sub">${highlight(preview, query)}</div>
       </div>`;
     }).join('');
@@ -3090,7 +3176,7 @@ function renderSearchResults(data, query) {
       const patient = state.patients.find(pp => pp.id == f.patient_id);
       return `<div class="search-result-item" onclick="openPatient('${f.patient_id}');switchPatientTab('infos');hideSearchResults();document.getElementById('global-search').value='';">
         <div class="search-result-main">${highlight(f.numero, query)}</div>
-        <div class="search-result-sub">${patient ? patient.prenom + ' ' + patient.nom : '—'} · ${formatDate(f.date)} · ${formatAmount(f.montant)}</div>
+        <div class="search-result-sub">${patient ? escapeHtml(patient.prenom) + ' ' + escapeHtml(patient.nom) : '—'} · ${formatDate(f.date)} · ${formatAmount(f.montant)}</div>
       </div>`;
     }).join('');
   }
@@ -3100,13 +3186,13 @@ function renderSearchResults(data, query) {
     html += seances.map(s => {
       const patient = s.patient_id ? state.patients.find(pp => pp.id == s.patient_id) : null;
       return `<div class="search-result-item" onclick="navigate('agenda');hideSearchResults();document.getElementById('global-search').value='';">
-        <div class="search-result-main">${formatDate(s.date)} ${s.heure || ''} · ${patient ? patient.prenom + ' ' + patient.nom : '—'}</div>
+        <div class="search-result-main">${formatDate(s.date)} ${s.heure || ''} · ${patient ? escapeHtml(patient.prenom) + ' ' + escapeHtml(patient.nom) : '—'}</div>
       </div>`;
     }).join('');
   }
 
   if (!html) {
-    html = `<div class="search-empty">Aucun résultat pour « ${query} »</div>`;
+    html = `<div class="search-empty">Aucun résultat pour « ${escapeHtml(query)} »</div>`;
   }
 
   panel.innerHTML = html;
@@ -3235,7 +3321,7 @@ async function renderDocuments() {
   if (patFilter) {
     const prev = patFilter.value;
     patFilter.innerHTML = '<option value="">— Tous les patients —</option>'
-      + state.patients.map(p => `<option value="${p.id}">${p.prenom} ${p.nom}</option>`).join('');
+      + state.patients.map(p => `<option value="${p.id}">${escapeHtml(p.prenom)} ${escapeHtml(p.nom)}</option>`).join('');
     patFilter.value = prev;
   }
   renderDocumentsList();
@@ -3256,9 +3342,9 @@ function renderDocumentsList() {
   }
   tbody.innerHTML = docs.map(d => `<tr>
     <td>${formatDate(d.date_creation?.slice(0,10))}</td>
-    <td style="font-size:var(--text-xs);">${DOC_TYPE_LABELS[d.type] || d.type}</td>
-    <td>${d.patient_nom || '—'}</td>
-    <td>${d.titre || '—'}</td>
+    <td style="font-size:var(--text-xs);">${escapeHtml(DOC_TYPE_LABELS[d.type] || d.type)}</td>
+    <td>${d.patient_nom ? escapeHtml(d.patient_nom) : '—'}</td>
+    <td>${d.titre ? escapeHtml(d.titre) : '—'}</td>
     <td>${docStatusBadge(d.statut)}</td>
     <td><button class="btn btn-ghost btn-sm" onclick="openDocumentEditor('${d.id}')"><i data-lucide="edit-3"></i></button></td>
   </tr>`).join('');
@@ -3332,12 +3418,12 @@ async function renderDocumentEditor() {
 
   const patient = _docPatientCache?.patient;
   const patientBlock = patient
-    ? `<div class="form-group"><label>Patient</label><div style="padding:var(--space-2) 0;font-weight:600;">${patient.prenom} ${patient.nom}</div></div>`
+    ? `<div class="form-group"><label>Patient</label><div style="padding:var(--space-2) 0;font-weight:600;">${escapeHtml(patient.prenom)} ${escapeHtml(patient.nom)}</div></div>`
     : `<div class="form-group"><label>Patient</label>
        <select class="form-select" id="dp-patient" ${isFinalized?'disabled':''} onchange="onDocPatientChange()">
          <option value="">— Aucun patient —</option>
          ${state.patients.map(p => `<option value="${p.id}" ${p.id === _docState.patientId ? 'selected':''}>
-           ${p.prenom} ${p.nom}</option>`).join('')}
+           ${escapeHtml(p.prenom)} ${escapeHtml(p.nom)}</option>`).join('')}
        </select></div>`;
 
   formEl.innerHTML = `
@@ -3349,7 +3435,7 @@ async function renderDocumentEditor() {
     </div>
     ${patientBlock}
     <div class="form-group"><label>Titre du document</label>
-      <input class="form-input" id="dp-titre" value="${_docState.titre || ''}" ${isFinalized?'disabled':''}
+      <input class="form-input" id="dp-titre" value="${escapeHtml(_docState.titre)}" ${isFinalized?'disabled':''}
         oninput="_docState.titre=this.value;document.getElementById('doc-editor-title-bar').textContent=this.value||'Document';">
     </div>
     <hr style="margin:var(--space-4) 0;border:none;border-top:1px solid var(--color-border);">
@@ -3507,11 +3593,11 @@ function renderDocTests() {
   if (!c) return;
   c.innerHTML = _docTests.map((t, i) => `
     <div style="display:grid;grid-template-columns:1fr 80px 1fr auto;gap:var(--space-2);margin-bottom:var(--space-2);align-items:start;">
-      <input class="form-input" placeholder="Nom du test" value="${t.nom}"
+      <input class="form-input" placeholder="Nom du test" value="${escapeHtml(t.nom)}"
         oninput="_docTests[${i}].nom=this.value;onDocFieldChange()">
-      <input class="form-input" placeholder="Score" value="${t.score}"
+      <input class="form-input" placeholder="Score" value="${escapeHtml(t.score)}"
         oninput="_docTests[${i}].score=this.value;onDocFieldChange()">
-      <input class="form-input" placeholder="Interprétation" value="${t.interpretation}"
+      <input class="form-input" placeholder="Interprétation" value="${escapeHtml(t.interpretation)}"
         oninput="_docTests[${i}].interpretation=this.value;onDocFieldChange()">
       <button class="btn btn-ghost btn-sm" style="color:var(--color-error);" onclick="removeDocTest(${i})">
         <i data-lucide="x"></i>
@@ -3632,19 +3718,19 @@ async function updateDocumentPreview() {
 
 function renderDocumentHTML(bodyHTML) {
   const s = state.settings;
-  const praticien = `${s.prenom || ''} ${s.nom || ''}`.trim() || 'Praticien';
-  const city = extractCityFromAddress(s.adresse);
+  const praticien = escapeHtml(`${s.prenom || ''} ${s.nom || ''}`.trim() || 'Praticien');
+  const city = escapeHtml(extractCityFromAddress(s.adresse));
   const dateFormatted = formatDate(today());
   return `<div class="doc-document">
     <div class="doc-doc-header">
       <div class="doc-praticien-info">
         <strong>${praticien}</strong><br>
         Psychologue<br>
-        ${s.rpps ? `N° RPPS&nbsp;: ${s.rpps}<br>` : ''}
-        ${s.siret ? `SIRET&nbsp;: ${s.siret}<br>` : ''}
-        ${s.adresse ? `${s.adresse}<br>` : ''}
-        ${s.tel ? `Tél.&nbsp;: ${s.tel}<br>` : ''}
-        ${s.email || ''}
+        ${s.rpps ? `N° RPPS&nbsp;: ${escapeHtml(s.rpps)}<br>` : ''}
+        ${s.siret ? `SIRET&nbsp;: ${escapeHtml(s.siret)}<br>` : ''}
+        ${s.adresse ? `${escapeHtml(s.adresse)}<br>` : ''}
+        ${s.tel ? `Tél.&nbsp;: ${escapeHtml(s.tel)}<br>` : ''}
+        ${escapeHtml(s.email || '')}
       </div>
       <div class="doc-date-lieu">${city}, le ${dateFormatted}</div>
     </div>
@@ -3654,7 +3740,7 @@ function renderDocumentHTML(bodyHTML) {
     </div>
     <div class="doc-doc-footer">
       Document confidentiel — Secret professionnel (art.&nbsp;226-13 du Code pénal) —
-      ${praticien}, Psychologue${s.rpps ? ', N° RPPS&nbsp;: ' + s.rpps : ''}
+      ${praticien}, Psychologue${s.rpps ? ', N° RPPS&nbsp;: ' + escapeHtml(s.rpps) : ''}
     </div>
   </div>`;
 }
@@ -3663,15 +3749,15 @@ function renderDocumentHTML(bodyHTML) {
 
 function tplPatientHeader(patient) {
   if (!patient) return '[Patient non renseigné]';
-  return `<strong>${patient.prenom} ${patient.nom.toUpperCase()}</strong>`;
+  return `<strong>${escapeHtml(patient.prenom)} ${escapeHtml(patient.nom.toUpperCase())}</strong>`;
 }
 
 function tplPrenomNom(patient) {
   if (!patient) return '[Patient]';
-  return `${patient.prenom} ${patient.nom.toUpperCase()}`;
+  return `${escapeHtml(patient.prenom)} ${escapeHtml(patient.nom.toUpperCase())}`;
 }
 
-function nl2br(str) { return (str || '').replace(/\n/g, '<br>'); }
+function nl2br(str) { return escapeHtml(str || '').replace(/\n/g, '<br>'); }
 
 function tplLiaisonMedecin(params, cache) {
   const p = cache?.patient;
@@ -3680,9 +3766,9 @@ function tplLiaisonMedecin(params, cache) {
   const pn = tplPrenomNom(p);
   const naissance = p?.naissance ? formatDate(p.naissance) : '—';
   const premiereSeance = seances[0] ? formatDate(seances[0].date) : '—';
-  const motif = a?.motif_principal || p?.motif || '…';
+  const motif = escapeHtml(a?.motif_principal || p?.motif || '…');
   const destBlock = params.destinataire
-    ? `<p><strong>Dr ${params.destinataire}</strong>${params.adresse_dest ? '<br>'+params.adresse_dest : ''}</p>` : '';
+    ? `<p><strong>Dr ${escapeHtml(params.destinataire)}</strong>${params.adresse_dest ? '<br>'+nl2br(params.adresse_dest) : ''}</p>` : '';
   return `${destBlock}
     <p><strong>Objet&nbsp;: Prise en charge psychologique de ${pn}</strong></p>
     <p>Confrère/Consœur,</p>
@@ -3701,9 +3787,9 @@ function tplLiaisonPsychiatre(params, cache) {
   const pn = tplPrenomNom(p);
   const naissance = p?.naissance ? formatDate(p.naissance) : '—';
   const premiereSeance = seances[0] ? formatDate(seances[0].date) : '—';
-  const motif = a?.motif_principal || p?.motif || '…';
+  const motif = escapeHtml(a?.motif_principal || p?.motif || '…');
   const destBlock = params.destinataire
-    ? `<p><strong>Dr ${params.destinataire}</strong>${params.adresse_dest ? '<br>'+params.adresse_dest : ''}</p>` : '';
+    ? `<p><strong>Dr ${escapeHtml(params.destinataire)}</strong>${params.adresse_dest ? '<br>'+nl2br(params.adresse_dest) : ''}</p>` : '';
   const natureLabels = {
     evaluation:'Évaluation psychiatrique', traitement:'Traitement médicamenteux',
     hospitalisation:'Hospitalisation', coordination:'Coordination', autre:'Autre',
@@ -3712,7 +3798,7 @@ function tplLiaisonPsychiatre(params, cache) {
   let traitements = '';
   if (a?.traitements?.length) {
     const liste = a.traitements.map(t => t.medicament || String(t)).filter(Boolean).join(', ');
-    if (liste) traitements = `<p>Traitements en cours&nbsp;: ${liste}.</p>`;
+    if (liste) traitements = `<p>Traitements en cours&nbsp;: ${escapeHtml(liste)}.</p>`;
   }
   return `${destBlock}
     <p><strong>Objet&nbsp;: ${objet} — ${pn}</strong></p>
@@ -3739,17 +3825,17 @@ function tplAttestationSuivi(params, cache) {
   };
   const freq = freqLabels[params.frequence] || 'variable';
   const s = state.settings;
-  const praticien = `${s.prenom || ''} ${s.nom || ''}`.trim() || 'Praticien';
+  const praticien = escapeHtml(`${s.prenom || ''} ${s.nom || ''}`.trim() || 'Praticien');
   return `<h2 style="text-align:center;font-size:13pt;text-transform:uppercase;margin-bottom:2rem;letter-spacing:.05em;">
       Attestation de suivi psychologique</h2>
-    <p>Je soussigné(e), ${praticien}, Psychologue${s.rpps?', N° RPPS&nbsp;: '+s.rpps:''}, exerçant en libéral,</p>
+    <p>Je soussigné(e), ${praticien}, Psychologue${s.rpps?', N° RPPS&nbsp;: '+escapeHtml(s.rpps):''}, exerçant en libéral,</p>
     <p>atteste que ${tplPatientHeader(p)}, né(e) le ${naissance},
     bénéficie d'un suivi psychologique depuis le ${premiereSeance}.</p>
     <p>À ce jour, <strong>${nb} séance${nb>1?'s ont':'a'} été réalisée${nb>1?'s':''}</strong>,
     à une fréquence ${freq}.</p>
-    ${params.motif_attestation ? `<p>Motif&nbsp;: ${params.motif_attestation}.</p>` : ''}
+    ${params.motif_attestation ? `<p>Motif&nbsp;: ${escapeHtml(params.motif_attestation)}.</p>` : ''}
     <p>Cette attestation est établie à la demande de l'intéressé(e) et pour faire valoir
-    ${params.destinataire || 'à qui de droit'}.</p>`;
+    ${escapeHtml(params.destinataire) || 'à qui de droit'}.</p>`;
 }
 
 function tplAttestationPresence(params, cache) {
@@ -3766,14 +3852,14 @@ function tplAttestationPresence(params, cache) {
   }
   const heureStr = heureDebut ? ` de <strong>${heureDebut}</strong> à <strong>${heureFin||'—'}</strong>` : '';
   const s = state.settings;
-  const praticien = `${s.prenom || ''} ${s.nom || ''}`.trim() || 'Praticien';
+  const praticien = escapeHtml(`${s.prenom || ''} ${s.nom || ''}`.trim() || 'Praticien');
   return `<h2 style="text-align:center;font-size:13pt;text-transform:uppercase;margin-bottom:2rem;letter-spacing:.05em;">
       Attestation de présence</h2>
-    <p>Je soussigné(e), ${praticien}, Psychologue${s.rpps?', N° RPPS&nbsp;: '+s.rpps:''},</p>
+    <p>Je soussigné(e), ${praticien}, Psychologue${s.rpps?', N° RPPS&nbsp;: '+escapeHtml(s.rpps):''},</p>
     <p>atteste que ${tplPatientHeader(p)} s'est présenté(e) en consultation de psychologie
     le <strong>${dateSeance}</strong>${heureStr}.</p>
     <p>Cette attestation est établie à la demande de l'intéressé(e) et pour faire valoir
-    ${params.destinataire || 'à qui de droit'}.</p>`;
+    ${escapeHtml(params.destinataire) || 'à qui de droit'}.</p>`;
 }
 
 function tplCRPsychometrique(params, cache) {
@@ -3789,9 +3875,9 @@ function tplCRPsychometrique(params, cache) {
     age = a + ' ans';
   }
   const testsRows = (params.tests||[]).map(t =>
-    `<tr><td style="border:1px solid #ccc;padding:6px 10px;">${t.nom||'—'}</td>
-     <td style="border:1px solid #ccc;padding:6px 10px;text-align:center;">${t.score||'—'}</td>
-     <td style="border:1px solid #ccc;padding:6px 10px;">${t.interpretation||'—'}</td></tr>`
+    `<tr><td style="border:1px solid #ccc;padding:6px 10px;">${escapeHtml(t.nom||'—')}</td>
+     <td style="border:1px solid #ccc;padding:6px 10px;text-align:center;">${escapeHtml(t.score||'—')}</td>
+     <td style="border:1px solid #ccc;padding:6px 10px;">${escapeHtml(t.interpretation||'—')}</td></tr>`
   ).join('');
   const testsTable = testsRows
     ? `<table style="width:100%;border-collapse:collapse;margin:1rem 0;font-size:10pt;">
@@ -3808,7 +3894,7 @@ function tplCRPsychometrique(params, cache) {
     <p><strong>Patient&nbsp;:</strong> ${pn}<br>
     <strong>Date de naissance&nbsp;:</strong> ${naissance} (${age})<br>
     ${params.dates_passation ? `<strong>Date(s) de passation&nbsp;:</strong> ${params.dates_passation}<br>` : ''}
-    ${params.destinataire ? `<strong>Destinataire&nbsp;:</strong> ${params.destinataire}` : ''}</p>
+    ${params.destinataire ? `<strong>Destinataire&nbsp;:</strong> ${escapeHtml(params.destinataire)}` : ''}</p>
     ${h3(2,'Motif et contexte de la demande')}
     <p>${nl2br(params.motif_bilan) || '—'}</p>
     ${h3(3,'Résultats des évaluations')}
@@ -3830,7 +3916,7 @@ function tplCROrientation(params, cache) {
       Compte-rendu de bilan d'orientation professionnelle</h2>
     <p><strong>Patient&nbsp;:</strong> ${pn}<br>
     <strong>Date de naissance&nbsp;:</strong> ${naissance}<br>
-    ${params.destinataire ? `<strong>Destinataire&nbsp;:</strong> ${params.destinataire}` : ''}</p>
+    ${params.destinataire ? `<strong>Destinataire&nbsp;:</strong> ${escapeHtml(params.destinataire)}` : ''}</p>
     ${sec(1,'Contexte et objectifs du bilan', params.contexte)}
     ${sec(2,'Démarche méthodologique', params.demarche)}
     ${sec(3,'Compétences et ressources identifiées', params.competences)}
@@ -4005,8 +4091,8 @@ async function renderPatientDocuments(patientId) {
       <thead><tr><th>Date</th><th>Type</th><th>Titre</th><th>Statut</th><th></th></tr></thead>
       <tbody>${docs.map(d => `<tr>
         <td>${formatDate(d.date_creation?.slice(0,10))}</td>
-        <td style="font-size:var(--text-xs);">${DOC_TYPE_LABELS[d.type] || d.type}</td>
-        <td>${d.titre || '—'}</td>
+        <td style="font-size:var(--text-xs);">${escapeHtml(DOC_TYPE_LABELS[d.type] || d.type)}</td>
+        <td>${d.titre ? escapeHtml(d.titre) : '—'}</td>
         <td>${docStatusBadge(d.statut)}</td>
         <td><button class="btn btn-ghost btn-sm" onclick="openDocumentEditor('${d.id}')">
           <i data-lucide="edit-3"></i></button></td>
@@ -4145,9 +4231,9 @@ async function genererCode() {
       <div style="font-size:var(--text-sm);color:var(--color-text-muted);margin:var(--space-2) 0;">
         ${synchro ? '✅ Transmis au Pi' : '⚠️ Non synchronisé avec le Pi'} · Expire le ${expStr}
       </div>
-      <div style="font-size:var(--text-xs);color:var(--color-text-muted);margin-bottom:var(--space-3);word-break:break-all;">${lien}</div>
+      <div style="font-size:var(--text-xs);color:var(--color-text-muted);margin-bottom:var(--space-3);word-break:break-all;">${escapeHtml(lien)}</div>
       <div style="display:flex;gap:var(--space-2);flex-wrap:wrap;">
-        <button class="btn btn-primary btn-sm" onclick="copierPresse('${lien}')"><i data-lucide="link"></i> Copier le lien</button>
+        <button class="btn btn-primary btn-sm" onclick="copierPresse('${escapeHtml(lien)}')"><i data-lucide="link"></i> Copier le lien</button>
         <button class="btn btn-secondary btn-sm" onclick="copierPresse('${code}')"><i data-lucide="copy"></i> Copier le code</button>
         ${!synchro ? `<button class="btn btn-ghost btn-sm" onclick="reessayerSynchroCode('${code}')"><i data-lucide="refresh-cw"></i> Réessayer</button>` : ''}
       </div>
@@ -4204,7 +4290,7 @@ async function renderOngletQuestionnaires() {
     'complété':        '<span class="badge badge-success">✅ Complété</span>',
     'expiré':          '<span class="badge badge-error">🔴 Expiré</span>',
     'non_synchronisé': '<span class="badge badge-muted">⚠️ Non synchronisé</span>',
-  }[s] || `<span class="badge">${s}</span>`);
+  }[s] || `<span class="badge">${escapeHtml(s)}</span>`);
 
   const tableauCodes = codes.length ? `
     <table>
@@ -4216,8 +4302,8 @@ async function renderOngletQuestionnaires() {
             ? `<button class="btn btn-ghost btn-sm" onclick="reessayerSynchroCode('${c.code}')"><i data-lucide="refresh-cw"></i></button>`
             : '';
           return `<tr>
-            <td>${meta.label || c.questionnaire_slug} — ${meta.titre || ''}</td>
-            <td><code>${c.code}</code></td>
+            <td>${escapeHtml(meta.label || c.questionnaire_slug)} — ${escapeHtml(meta.titre || '')}</td>
+            <td><code>${escapeHtml(c.code)}</code></td>
             <td>${formatDate(c.date_creation.slice(0,10))}</td>
             <td>${formatDate(c.date_expiration.slice(0,10))}</td>
             <td>${statutBadge(c.statut)}</td>
@@ -4233,7 +4319,7 @@ async function renderOngletQuestionnaires() {
       ${alertes.filter(a => !a.lu).map(a => `
         <div class="alert alert-error" style="margin-bottom:var(--space-2);">
           <i data-lucide="alert-triangle"></i>
-          <div>${a.message}</div>
+          <div>${escapeHtml(a.message)}</div>
         </div>`).join('')}
     </div>` : '';
 
@@ -4346,7 +4432,7 @@ function renderEvolutionSlug(slug, resultats) {
 
   const circles = points.map(p => `
     <circle cx="${p.x}" cy="${p.y}" r="5" fill="var(--color-primary)" stroke="white" stroke-width="2">
-      <title>${p.date} — Score ${p.score} — ${p.interp}</title>
+      <title>${p.date} — Score ${p.score} — ${escapeHtml(p.interp)}</title>
     </circle>`).join('');
 
   const xLabels = points.map(p => `<text x="${p.x}" y="${H - 6}" text-anchor="middle" font-size="10" fill="var(--color-text-muted)">${p.date.slice(5)}</text>`).join('');
@@ -4378,14 +4464,14 @@ function renderEvolutionSlug(slug, resultats) {
     return `<tr>
       <td>${formatDate(r.date_passation.slice(0,10))}</td>
       <td><strong>${r.score_total ?? '—'}</strong></td>
-      <td style="font-size:var(--text-xs);">${r.interpretation || '—'}</td>
+      <td style="font-size:var(--text-xs);">${escapeHtml(r.interpretation || '—')}</td>
       <td>${deltaHtml}</td>
       <td style="text-align:center;">${consentBadge}</td>
     </tr>`;
   }).join('');
 
   return `<div class="questionnaire-block" style="margin-bottom:var(--space-5);">
-    <div class="questionnaire-title">${meta.label} — ${meta.titre}</div>
+    <div class="questionnaire-title">${escapeHtml(meta.label)} — ${escapeHtml(meta.titre)}</div>
     <div style="margin:var(--space-3) 0;">${svg}</div>
     <div class="table-container">
       <table>

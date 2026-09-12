@@ -8,19 +8,27 @@
     "opener:default",
     {
       "identifier": "fs:allow-read-text-file",
-      "allow": [{ "path": "$HOME/**" }]
+      "allow": [
+        { "path": "$DOCUMENT/**" },
+        { "path": "$DESKTOP/**" },
+        { "path": "$DOWNLOAD/**" }
+      ]
     },
     {
       "identifier": "fs:allow-write-text-file",
-      "allow": [{ "path": "$HOME/**" }]
+      "allow": [
+        { "path": "$DOCUMENT/**" },
+        { "path": "$DESKTOP/**" },
+        { "path": "$DOWNLOAD/**" }
+      ]
     },
     {
       "identifier": "fs:allow-exists",
-      "allow": [{ "path": "$HOME/**" }]
+      "allow": [{ "path": "$DOCUMENT/PsyGest/**" }]
     },
     {
       "identifier": "fs:allow-mkdir",
-      "allow": [{ "path": "$HOME/**" }]
+      "allow": [{ "path": "$DOCUMENT/PsyGest/**" }]
     },
     "dialog:allow-open",
     "dialog:allow-save",

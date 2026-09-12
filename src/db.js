@@ -200,6 +200,8 @@ async function applySchema(db) {
     'ALTER TABLE seances ADD COLUMN mode TEXT DEFAULT \'presentiel\'',
     'ALTER TABLE seances ADD COLUMN honoraires REAL',
     'ALTER TABLE seances ADD COLUMN lien_visio TEXT',
+    'ALTER TABLE factures ADD COLUMN type TEXT DEFAULT \'facture\'',
+    'ALTER TABLE factures ADD COLUMN facture_origine_id TEXT',
   ];
   for (const sql of migrations) {
     try { await db.execute(sql); } catch (_) {}
@@ -341,6 +343,8 @@ export async function loadAll(db) {
     notes: row.notes_privees || '',
     dateCreation: row.date_creation || row.date,
     numSeq: row.num_seq || 0,
+    type: row.type || 'facture',
+    factureOrigineId: row.facture_origine_id || null,
   }));
 
   // Charges → camelCase
@@ -503,13 +507,14 @@ async function saveFacturesAll(db, factures) {
   for (const f of factures) {
     await db.execute(
       `INSERT INTO factures (id,patient_id,numero,date,montant,prestation,duree,statut,
-         notes_privees,date_creation,num_seq)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+         notes_privees,date_creation,num_seq,type,facture_origine_id)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       [
         String(f.id), String(f.patientId), f.numero, f.date, f.montant,
         f.prestation || 'Consultation psychologique', f.duree || 50,
         f.statut || 'en_attente', f.notes || null,
         f.dateCreation || f.date, f.numSeq || 0,
+        f.type || 'facture', f.factureOrigineId || null,
       ]
     );
   }
@@ -684,6 +689,35 @@ export async function deleteDocument(db, id) {
   await db.execute('DELETE FROM documents WHERE id = ?', [id]);
 }
 
+// ─── Suppression RGPD (droit à l'effacement, art. 17) ──────────────────────────
+
+/**
+ * Purge toutes les données liées à un patient dans les tables NON couvertes par
+ * saveAll() — anamnèse, documents générés, codes/résultats/alertes de la PWA
+ * questionnaires. (patients/factures/seances/notes_cliniques/questionnaires/
+ * objectifs sont purgés séparément par saveAll() une fois le patient retiré de
+ * state en mémoire.) Sans ce nettoyage, "supprimer" un dossier ne supprime en
+ * réalité ni l'anamnèse ni les courriers/attestations générés — le vrai contenu
+ * clinique restait orphelin dans la base malgré la disparition du patient de
+ * l'interface.
+ */
+export async function deletePatientCascade(db, patientId) {
+  const id = String(patientId);
+  await db.execute('BEGIN IMMEDIATE');
+  try {
+    await db.execute('DELETE FROM anamnese WHERE patient_id = ?', [id]);
+    await db.execute('DELETE FROM documents WHERE patient_id = ?', [id]);
+    await db.execute('DELETE FROM questionnaire_codes WHERE patient_id = ?', [id]);
+    await db.execute('DELETE FROM questionnaire_resultats WHERE patient_id = ?', [id]);
+    await db.execute('DELETE FROM alertes_questionnaires WHERE patient_id = ?', [id]);
+    await db.execute('DELETE FROM pwa_codes WHERE patient_id = ?', [id]);
+    await db.execute('COMMIT');
+  } catch (e) {
+    try { await db.execute('ROLLBACK'); } catch (_) {}
+    throw e;
+  }
+}
+
 // ─── Export / Import complet ───────────────────────────────────────────────────
 
 /** Sérialise toutes les tables en un objet JSON exportable. */
@@ -713,7 +747,7 @@ const TABLE_COLUMNS = {
   seances: ['id','patient_id','date','heure','duree','type','statut','facture','note_ics','uid',
     'note_interne','mode','honoraires','lien_visio'],
   factures: ['id','patient_id','seance_id','numero','date','montant','prestation','duree','statut',
-    'mode_paiement','date_paiement','notes_privees','date_creation','num_seq'],
+    'mode_paiement','date_paiement','notes_privees','date_creation','num_seq','type','facture_origine_id'],
   charges: ['id','date','libelle','montant','categorie'],
   notes_cliniques: ['id','patient_id','seance_id','date','template','contenu','date_creation','date_modification'],
   questionnaires: ['id','patient_id','type','date','reponses','score','interpretation'],
