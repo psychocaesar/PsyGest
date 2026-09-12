@@ -20,11 +20,17 @@ export async function initDb() {
 
   const docDir = await documentDir();
   const dbFilePath = await join(docDir, 'PsyGest', 'psygest.db');
-  // Pragmas via URI → appliqués à CHAQUE connexion du pool (contrairement à PRAGMA post-open)
-  // _busy_timeout : attend jusqu'à 10s si la DB est occupée (évite SQLITE_BUSY)
-  // _journal_mode=WAL : lectures non-bloquantes
-  // _synchronous=NORMAL : compromis sécurité/perf sur SSD
-  const db = await Database.load(`sqlite:${dbFilePath}?_busy_timeout=10000&_journal_mode=WAL&_synchronous=NORMAL`);
+  // Le parseur d'URL de sqlx-sqlite ne reconnaît que mode/cache/immutable/vfs — tout
+  // autre paramètre (dont _busy_timeout, _journal_mode, _synchronous) fait échouer la
+  // connexion avec "unknown query parameter" avant même d'ouvrir le fichier. Les pragmas
+  // doivent donc être posés après coup, en SQL classique.
+  const db = await Database.load(`sqlite:${dbFilePath}`);
+  // journal_mode=WAL est persisté dans le fichier lui-même (pas besoin de le reposer à
+  // chaque connexion du pool) ; busy_timeout et synchronous sont par connexion, reposés
+  // ici au mieux pour la connexion initiale.
+  await db.execute('PRAGMA journal_mode = WAL');
+  await db.execute('PRAGMA busy_timeout = 10000'); // attend jusqu'à 10s si la DB est occupée (évite SQLITE_BUSY)
+  await db.execute('PRAGMA synchronous = NORMAL'); // compromis sécurité/perf sur SSD
   await applySchema(db);
   return db;
 }
@@ -391,7 +397,7 @@ function buildSettingsPairs(settings, nextFactureNum) {
     ['adresse', s.adresse || ''],
     ['tel', s.tel || ''],
     ['email', s.email || ''],
-    ['tauxUrssaf', String(s.tauxUrssaf ?? 21.2)],
+    ['tauxUrssaf', String(s.tauxUrssaf ?? 23.2)],
     ['tarifConsultation', String(s.tarifConsultation ?? 60)],
     ['dureeConsultation', String(s.dureeConsultation ?? 50)],
     ['calendlyUrl', s.calendlyUrl || ''],

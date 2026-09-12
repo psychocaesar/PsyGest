@@ -1,5 +1,5 @@
 import { writeTextFile } from '@tauri-apps/plugin-fs';
-import { open as dialogOpen, save as dialogSave, ask } from '@tauri-apps/plugin-dialog';
+import { open as dialogOpen, save as dialogSave, ask, message as dialogMessage } from '@tauri-apps/plugin-dialog';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { initDb, loadAll, saveAll, saveSettingsOnly, migrateFromJSON, exportAllData, importAllData, autoBackup, getAnamnese, saveAnamnese, searchAll, getDocuments, getDocumentsByPatient, getDocument, createDocument, updateDocument, deleteDocument as dbDeleteDocument, deletePatientCascade, savePwaCode, loadPwaCodes, markPwaCodeImported, createQuestionnaireCode, getQuestionnaireCodesByPatient, updateQuestionnaireCodeStatut, getQuestionnaireCodeByCode, expireQuestionnaireCodesLocally, insertQuestionnaireResultat, getResultatsByPatient, getResultatsByPatientAndSlug, createAlerteQuestionnaire, getAlertesByPatient, getAlertesNonLues, marquerAlertesLues } from './db.js';
 
@@ -14,7 +14,7 @@ const DEFAULT_SETTINGS = {
   adresse: '',
   tel: '',
   email: '',
-  tauxUrssaf: 21.2,
+  tauxUrssaf: 23.2,
   tarifConsultation: 60,
   dureeConsultation: 50,
   calendlyUrl: '',
@@ -36,6 +36,9 @@ let state = {
 // Current facture ID shown in aperçu (for email button)
 let _currentApercuId = null;
 
+let _dbInitFailed = false;
+let _dbInitError = '';
+
 async function loadState() {
   try {
     _db = await initDb();
@@ -55,6 +58,8 @@ async function loadState() {
     return state.patients.length > 0 || state.factures.length > 0 || migrated;
   } catch (e) {
     console.error('loadState:', e);
+    _dbInitFailed = true;
+    _dbInitError = (e && (e.message || String(e))) || 'erreur inconnue';
     return false;
   }
 }
@@ -185,7 +190,7 @@ function formatNum(n) { return 'FAC-' + new Date().getFullYear() + '-' + String(
 function formatDate(d) { if (!d) return '—'; return new Date(d + 'T12:00:00').toLocaleDateString('fr-FR'); }
 function formatAmount(a) { return Number(a).toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' €'; }
 function getInitials(prenom, nom) { return ((prenom || '')[0] || '') + ((nom || '')[0] || '').toUpperCase(); }
-function urssafRate() { return (state.settings.tauxUrssaf ?? 21.2) / 100; }
+function urssafRate() { return (state.settings.tauxUrssaf ?? 23.2) / 100; }
 function dataFilePath() {
   // Affiche un chemin lisible selon l'OS
   const home = '~';
@@ -1730,7 +1735,7 @@ function loadSettingsForm() {
   document.getElementById('set-adresse').value = s.adresse || '';
   document.getElementById('set-tel').value = s.tel || '';
   document.getElementById('set-email').value = s.email || '';
-  document.getElementById('set-taux-urssaf').value = s.tauxUrssaf ?? 21.2;
+  document.getElementById('set-taux-urssaf').value = s.tauxUrssaf ?? 23.2;
   document.getElementById('set-tarif').value = s.tarifConsultation ?? 60;
   document.getElementById('set-duree').value = s.dureeConsultation ?? 50;
   document.getElementById('set-objectif-ca').value = s.objectifCA || '';
@@ -1752,7 +1757,7 @@ async function saveSettings() {
     adresse: document.getElementById('set-adresse').value.trim(),
     tel: document.getElementById('set-tel').value.trim(),
     email: document.getElementById('set-email').value.trim(),
-    tauxUrssaf: parseFloat(document.getElementById('set-taux-urssaf').value) || 21.2,
+    tauxUrssaf: parseFloat(document.getElementById('set-taux-urssaf').value) || 23.2,
     tarifConsultation: parseFloat(document.getElementById('set-tarif').value) || 60,
     dureeConsultation: parseInt(document.getElementById('set-duree').value) || 50,
     objectifCA: parseFloat(document.getElementById('set-objectif-ca').value) || 0,
@@ -4618,6 +4623,13 @@ async function init() {
   lucide.createIcons();
   refreshDashboard();
   refreshSidebarCounts();
+  if (_dbInitFailed) {
+    toast("Impossible d'initialiser la base de données locale — rien ne pourra être enregistré.", 'error');
+    dialogMessage(
+      `Détail technique (à transmettre si besoin) :\n\n${_dbInitError}`,
+      { title: "Échec d'initialisation de la base de données", kind: 'error' }
+    );
+  }
   if (!hasData) navigate('settings');
 }
 
