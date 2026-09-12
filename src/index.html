@@ -146,7 +146,7 @@
     </div>
     <div class="kpi-grid">
       <div class="kpi-card">
-        <div class="kpi-label">CA du mois</div>
+        <div class="kpi-label">CA du mois (HT)</div>
         <div class="kpi-value" id="kpi-ca">0 €</div>
         <div class="kpi-sub kpi-trend-up" id="kpi-ca-sub">—</div>
       </div>
@@ -168,7 +168,7 @@
     </div>
     <div class="charges-bar">
       <div class="charges-title">⚠️ Charges URSSAF estimées (rappel)</div>
-      <p style="font-size:var(--text-sm);color:var(--color-text-muted);margin-bottom:var(--space-3);">Les charges URSSAF peuvent représenter plusieurs centaines d'euros par mois, même en début d'activité. Provisionnez environ 21–22 % de votre CA.</p>
+      <p style="font-size:var(--text-sm);color:var(--color-text-muted);margin-bottom:var(--space-3);">Les charges URSSAF peuvent représenter plusieurs centaines d'euros par mois, même en début d'activité. Provisionnez environ 23,2 % de votre CA (HT).</p>
       <div class="bar-track"><div class="bar-fill" id="urssaf-bar" style="width:0%"></div></div>
       <div class="bar-labels"><span id="urssaf-montant">0 € provisionnés</span><span id="urssaf-ca">sur 0 € CA</span></div>
     </div>
@@ -298,10 +298,10 @@
     <h2 class="section-title" style="margin-bottom:var(--space-6);">Charges &amp; URSSAF</h2>
     <div class="alert alert-warning">
       <i data-lucide="alert-circle"></i>
-      <div>Les charges URSSAF peuvent représenter <strong>plusieurs centaines d'euros par mois</strong>, même au début de l'activité. Provisionnez au minimum 21,2 % de votre CA brut (taux BNC micro-entreprise 2024).</div>
+      <div>Les charges URSSAF peuvent représenter <strong>plusieurs centaines d'euros par mois</strong>, même au début de l'activité. Provisionnez environ 23,2 % de votre CA (HT) — taux CIPAV professions libérales réglementées.</div>
     </div>
     <div class="kpi-grid">
-      <div class="kpi-card"><div class="kpi-label">CA total</div><div class="kpi-value" id="charges-ca">0 €</div><div class="kpi-sub">toutes périodes</div></div>
+      <div class="kpi-card"><div class="kpi-label">CA total (HT)</div><div class="kpi-value" id="charges-ca">0 €</div><div class="kpi-sub">toutes périodes</div></div>
       <div class="kpi-card"><div class="kpi-label">URSSAF estimé</div><div class="kpi-value kpi-trend-warning" id="charges-urssaf">0 €</div><div class="kpi-sub">à provisionner</div></div>
       <div class="kpi-card"><div class="kpi-label">Charges saisies</div><div class="kpi-value" id="charges-total">0 €</div><div class="kpi-sub">loyer, matériel, etc.</div></div>
       <div class="kpi-card"><div class="kpi-label">Bénéfice net estimé</div><div class="kpi-value kpi-trend-up" id="charges-net">0 €</div><div class="kpi-sub">après charges</div></div>
@@ -776,8 +776,15 @@
         <div class="form-group"><label for="f-date">Date de séance *</label><input class="form-input" id="f-date" type="date"></div>
       </div>
       <div class="form-group"><label for="f-prestation">Prestation</label><input class="form-input" id="f-prestation" value="Consultation psychologique" placeholder="Consultation…"></div>
+      <div class="form-group"><label for="f-type-prestation">Type de prestation</label>
+        <select class="form-select" id="f-type-prestation" onchange="updateFactureTvaHint()">
+          <option value="soin">Soin — exonéré de TVA (art. 261-4-1° CGI)</option>
+          <option value="analyse_pratique">Analyse de pratiques professionnelles — TVA 20 %</option>
+        </select>
+        <div class="form-hint" id="f-tva-hint"></div>
+      </div>
       <div class="form-row">
-        <div class="form-group"><label for="f-montant">Montant TTC (€) *</label><input class="form-input" id="f-montant" type="number" min="0" step="0.5" placeholder="60.00"></div>
+        <div class="form-group"><label for="f-montant">Montant TTC (€) *</label><input class="form-input" id="f-montant" type="number" min="0" step="0.5" placeholder="60.00" oninput="updateFactureTvaHint()"></div>
         <div class="form-group"><label for="f-duree">Durée (min)</label><input class="form-input" id="f-duree" type="number" min="15" step="5" value="50"></div>
       </div>
       <div class="form-group"><label for="f-statut">Statut</label>

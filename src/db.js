@@ -208,6 +208,7 @@ async function applySchema(db) {
     'ALTER TABLE seances ADD COLUMN lien_visio TEXT',
     'ALTER TABLE factures ADD COLUMN type TEXT DEFAULT \'facture\'',
     'ALTER TABLE factures ADD COLUMN facture_origine_id TEXT',
+    'ALTER TABLE factures ADD COLUMN type_prestation TEXT DEFAULT \'soin\'',
   ];
   for (const sql of migrations) {
     try { await db.execute(sql); } catch (_) {}
@@ -350,6 +351,7 @@ export async function loadAll(db) {
     numSeq: row.num_seq || 0,
     type: row.type || 'facture',
     factureOrigineId: row.facture_origine_id || null,
+    typePrestation: row.type_prestation || 'soin',
   }));
 
   // Charges → camelCase
@@ -512,14 +514,14 @@ async function saveFacturesAll(db, factures) {
   for (const f of factures) {
     await db.execute(
       `INSERT INTO factures (id,patient_id,numero,date,montant,prestation,duree,statut,
-         notes_privees,date_creation,num_seq,type,facture_origine_id)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+         notes_privees,date_creation,num_seq,type,facture_origine_id,type_prestation)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       [
         String(f.id), String(f.patientId), f.numero, f.date, f.montant,
         f.prestation || 'Consultation psychologique', f.duree || 50,
         f.statut || 'en_attente', f.notes || null,
         f.dateCreation || f.date, f.numSeq || 0,
-        f.type || 'facture', f.factureOrigineId || null,
+        f.type || 'facture', f.factureOrigineId || null, f.typePrestation || 'soin',
       ]
     );
   }
@@ -756,7 +758,8 @@ const TABLE_COLUMNS = {
   seances: ['id','patient_id','date','heure','duree','type','statut','facture','note_ics','uid',
     'note_interne','mode','honoraires','lien_visio'],
   factures: ['id','patient_id','seance_id','numero','date','montant','prestation','duree','statut',
-    'mode_paiement','date_paiement','notes_privees','date_creation','num_seq','type','facture_origine_id'],
+    'mode_paiement','date_paiement','notes_privees','date_creation','num_seq','type','facture_origine_id',
+    'type_prestation'],
   charges: ['id','date','libelle','montant','categorie'],
   notes_cliniques: ['id','patient_id','seance_id','date','template','contenu','date_creation','date_modification'],
   questionnaires: ['id','patient_id','type','date','reponses','score','interpretation'],

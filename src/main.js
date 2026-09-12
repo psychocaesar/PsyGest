@@ -196,6 +196,20 @@ function formatDate(d) { if (!d) return '—'; return new Date(d + 'T12:00:00').
 function formatAmount(a) { return Number(a).toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' €'; }
 function getInitials(prenom, nom) { return ((prenom || '')[0] || '') + ((nom || '')[0] || '').toUpperCase(); }
 function urssafRate() { return (state.settings.tauxUrssaf ?? 23.2) / 100; }
+
+// Taux TVA applicable aux analyses de pratiques professionnelles (prestation distincte
+// des actes de soin, exonérés de TVA au titre de l'art. 261-4-1° du CGI).
+const TAUX_TVA_ANALYSE_PRATIQUE = 20;
+// f.montant est toujours le montant TTC saisi. Pour une facture de soin (exonérée),
+// HT === TTC. Pour une analyse de pratiques, on recalcule le HT à partir du TTC.
+function factureMontants(f) {
+  const ttc = Number(f.montant);
+  if (f.typePrestation === 'analyse_pratique') {
+    const ht = Math.round((ttc / (1 + TAUX_TVA_ANALYSE_PRATIQUE / 100)) * 100) / 100;
+    return { ht, tva: Math.round((ttc - ht) * 100) / 100, ttc, tauxTva: TAUX_TVA_ANALYSE_PRATIQUE };
+  }
+  return { ht: ttc, tva: 0, ttc, tauxTva: 0 };
+}
 function dataFilePath() {
   // Affiche un chemin lisible selon l'OS
   const home = '~';
@@ -245,6 +259,24 @@ function populatePatientSelects() {
   });
 }
 
+function updateFactureTvaHint() {
+  const hint = document.getElementById('f-tva-hint');
+  if (!hint) return;
+  const type = document.getElementById('f-type-prestation')?.value || 'soin';
+  const montant = parseFloat(document.getElementById('f-montant')?.value);
+  if (type !== 'analyse_pratique') {
+    hint.textContent = '';
+    return;
+  }
+  if (isNaN(montant) || montant <= 0) {
+    hint.textContent = 'Le montant saisi ci-dessous est le montant TTC (HT + TVA 20 % calculée automatiquement).';
+    return;
+  }
+  const m = factureMontants({ montant, typePrestation: 'analyse_pratique' });
+  hint.textContent = `Soit ${formatAmount(m.ht)} HT + ${formatAmount(m.tva)} de TVA (20 %) = ${formatAmount(m.ttc)} TTC.`;
+}
+window.updateFactureTvaHint = updateFactureTvaHint;
+
 async function saveFacture() {
   const patientId = parseInt(document.getElementById('f-patient').value);
   const date = document.getElementById('f-date').value;
@@ -257,6 +289,7 @@ async function saveFacture() {
     id: String(Date.now()),
     numero: formatNum(state.nextFactureNum),
     patientId, date, montant,
+    typePrestation: document.getElementById('f-type-prestation')?.value || 'soin',
     prestation: document.getElementById('f-prestation').value || 'Consultation psychologique',
     duree: document.getElementById('f-duree').value,
     statut: document.getElementById('f-statut').value,
@@ -270,6 +303,8 @@ async function saveFacture() {
   closeModal('modalNewFacture');
   ['f-montant', 'f-notes'].forEach(id => { document.getElementById(id).value = ''; });
   document.getElementById('f-patient').value = '';
+  if (document.getElementById('f-type-prestation')) document.getElementById('f-type-prestation').value = 'soin';
+  updateFactureTvaHint();
   toast(`Facture ${facture.numero} créée ✓`);
   refreshSidebarCounts();
   refreshDashboard();
@@ -353,7 +388,11 @@ function apercuFacture(id) {
   const patient = state.patients.find(p => p.id === f.patientId);
   const s = state.settings;
   const nomPraticien = [s.prenom, s.nom].filter(Boolean).join(' ') || 'Praticien';
-  const tva = 'TVA non applicable — art. 261-4-1° du Code général des impôts';
+  const m = factureMontants(f);
+  const estAnalysePratique = f.typePrestation === 'analyse_pratique';
+  const mentionTva = estAnalysePratique
+    ? `TVA ${m.tauxTva}% applicable — analyse de pratiques professionnelles`
+    : 'TVA non applicable — art. 261-4-1° du Code général des impôts';
   const origine = f.type === 'avoir' ? state.factures.find(o => String(o.id) === String(f.factureOrigineId)) : null;
   const reglement = f.statut === 'payee' ? 'Réglée' : 'Paiement à réception de la facture';
 
@@ -396,13 +435,13 @@ function apercuFacture(id) {
         </tbody>
       </table>
       <div class="invoice-total">
-        <div class="total-line"><span>Sous-total HT</span><span>${formatAmount(f.montant)}</span></div>
-        <div class="total-line"><span>TVA</span><span>${tva}</span></div>
-        <div class="total-line total-ttc"><span>TOTAL TTC</span><span>${formatAmount(f.montant)}</span></div>
+        <div class="total-line"><span>Sous-total HT</span><span>${formatAmount(m.ht)}</span></div>
+        <div class="total-line"><span>${estAnalysePratique ? `TVA (${m.tauxTva}%)` : 'TVA'}</span><span>${estAnalysePratique ? formatAmount(m.tva) : mentionTva}</span></div>
+        <div class="total-line total-ttc"><span>TOTAL TTC</span><span>${formatAmount(m.ttc)}</span></div>
       </div>
       <div style="font-size:12px;color:#888;margin-top:var(--space-2);">Conditions de règlement : ${reglement}.</div>
       <div class="invoice-footer">
-        <strong>Psychologue — ${tva}</strong><br>
+        <strong>Psychologue${estAnalysePratique ? '' : ' — ' + mentionTva}</strong><br>
         Numérotation chronologique continue sans trou — Conforme art. L441-3 Code de commerce.<br>
         Données conservées conformément au RGPD. Consentement patient enregistré.
       </div>
@@ -456,6 +495,7 @@ async function saveAvoir() {
     patientId: f.patientId,
     date: today(),
     montant: -Math.abs(Number(f.montant)),
+    typePrestation: f.typePrestation || 'soin',
     prestation: `Avoir sur facture ${f.numero} — ${motif}`,
     duree: f.duree,
     statut: 'payee',
@@ -493,6 +533,8 @@ async function sendByEmail(id) {
     return;
   }
   const s = state.settings;
+  const m = factureMontants(f);
+  const estAnalysePratique = f.typePrestation === 'analyse_pratique';
   const praticien = [s.prenom, s.nom].filter(Boolean).join(' ') || 'Votre psychologue';
   const subject = `Facture ${f.numero} – ${formatDate(f.date)}`;
   const body = [
@@ -503,10 +545,14 @@ async function sendByEmail(id) {
     `  Facture : ${f.numero}`,
     `  Prestation : ${f.prestation}`,
     `  Durée : ${f.duree || 50} min`,
-    `  Montant TTC : ${formatAmount(f.montant)}`,
+    estAnalysePratique ? `  Montant HT : ${formatAmount(m.ht)}` : undefined,
+    estAnalysePratique ? `  TVA (${m.tauxTva}%) : ${formatAmount(m.tva)}` : undefined,
+    `  Montant TTC : ${formatAmount(m.ttc)}`,
     `  Statut : ${f.statut === 'payee' ? 'Payée' : 'En attente de paiement'}`,
     '',
-    'TVA non applicable — art. 261-4-1° du Code général des impôts.',
+    estAnalysePratique
+      ? `TVA ${m.tauxTva}% applicable — analyse de pratiques professionnelles.`
+      : 'TVA non applicable — art. 261-4-1° du Code général des impôts.',
     '',
     `Cordialement,`,
     praticien,
@@ -1041,7 +1087,7 @@ window.deleteCharge = deleteCharge;
 const catLabels = { loyer: 'Loyer', materiel: 'Matériel', formation: 'Formation', assurance: 'Assurance', logiciel: 'Logiciel', autre: 'Autre' };
 
 function refreshCharges() {
-  const ca = state.factures.filter(f => f.statut === 'payee').reduce((s, f) => s + Number(f.montant), 0);
+  const ca = state.factures.filter(f => f.statut === 'payee').reduce((s, f) => s + factureMontants(f).ht, 0);
   const urssaf = ca * urssafRate();
   const totalCharges = state.charges.reduce((s, c) => s + Number(c.montant), 0);
   const net = ca - urssaf - totalCharges;
@@ -1069,9 +1115,9 @@ function refreshDashboard() {
     const d = new Date(f.date);
     return d.getMonth() === thisMonth && d.getFullYear() === thisYear;
   });
-  const caMonth = facturesMonth.filter(f => f.statut === 'payee').reduce((s, f) => s + Number(f.montant), 0);
+  const caMonth = facturesMonth.filter(f => f.statut === 'payee').reduce((s, f) => s + factureMontants(f).ht, 0);
   const impayees = state.factures.filter(f => f.statut === 'en_attente');
-  const caTotal = state.factures.filter(f => f.statut === 'payee').reduce((s, f) => s + Number(f.montant), 0);
+  const caTotal = state.factures.filter(f => f.statut === 'payee').reduce((s, f) => s + factureMontants(f).ht, 0);
   const urssaf = caTotal * urssafRate();
 
   document.getElementById('kpi-ca').textContent = formatAmount(caMonth);
@@ -1082,7 +1128,7 @@ function refreshDashboard() {
     ? formatAmount(impayees.reduce((s, f) => s + Number(f.montant), 0)) + ' en attente'
     : 'Aucune impayée ✓';
   document.getElementById('urssaf-montant').textContent = formatAmount(urssaf) + ' provisionnés';
-  document.getElementById('urssaf-ca').textContent = 'sur ' + formatAmount(caTotal) + ' CA';
+  document.getElementById('urssaf-ca').textContent = 'sur ' + formatAmount(caTotal) + ' CA (HT)';
   const pct = caTotal > 0 ? Math.min(100, Math.round(urssaf / caTotal * 100)) : 0;
   document.getElementById('urssaf-bar').style.width = pct + '%';
 
@@ -1335,7 +1381,7 @@ function renderStatsOverview(from, to) {
   const facPeriod = state.factures.filter(f => inRange(f.date, from, to));
   const seancesPeriod = state.seances.filter(s => inRange(s.date, from, to));
   const payees = facPeriod.filter(f => f.statut === 'payee');
-  const ca = payees.reduce((s,f)=>s+Number(f.montant),0);
+  const ca = payees.reduce((s,f)=>s+factureMontants(f).ht,0);
   const chargesPeriod = state.charges.filter(c=>inRange(c.date,from,to));
   const totalCharges = chargesPeriod.reduce((s,c)=>s+Number(c.montant),0);
   const urssaf = ca * taux;
@@ -1352,7 +1398,7 @@ function renderStatsOverview(from, to) {
   const months = last12Months();
   const caByMonth = months.map(m => ({
     l: m.l,
-    v: Math.round(state.factures.filter(f=>f.statut==='payee'&&inRange(f.date,m.from,m.to)).reduce((s,f)=>s+Number(f.montant),0)),
+    v: Math.round(state.factures.filter(f=>f.statut==='payee'&&inRange(f.date,m.from,m.to)).reduce((s,f)=>s+factureMontants(f).ht,0)),
   }));
   const seancesByMonth = months.map(m => ({
     l: m.l,
@@ -1454,7 +1500,7 @@ function renderStatsFinancier(from, to) {
   const taux = urssafRate();
   const facPeriod = state.factures.filter(f=>inRange(f.date,from,to));
   const payees = facPeriod.filter(f=>f.statut==='payee');
-  const ca = payees.reduce((s,f)=>s+Number(f.montant),0);
+  const ca = payees.reduce((s,f)=>s+factureMontants(f).ht,0);
   const chargesPeriod = state.charges.filter(c=>inRange(c.date,from,to));
   const totalCharges = chargesPeriod.reduce((s,c)=>s+Number(c.montant),0);
   const urssaf = ca * taux;
@@ -1472,7 +1518,7 @@ function renderStatsFinancier(from, to) {
 
   const months = last12Months();
   const stackData = months.map(m => {
-    const mCA = state.factures.filter(f=>f.statut==='payee'&&inRange(f.date,m.from,m.to)).reduce((s,f)=>s+Number(f.montant),0);
+    const mCA = state.factures.filter(f=>f.statut==='payee'&&inRange(f.date,m.from,m.to)).reduce((s,f)=>s+factureMontants(f).ht,0);
     const mCharges = state.charges.filter(c=>inRange(c.date,m.from,m.to)).reduce((s,c)=>s+Number(c.montant),0);
     return { l:m.l, ca:mCA, charges:mCharges, urssaf:mCA*taux };
   });
@@ -1563,12 +1609,12 @@ function renderUrssafTrimestriel() {
   const caIndiv = facPeriod.filter(f=>{
     const s = state.seances.find(ss=>ss.id===f.seanceId);
     return !s || s.type==='individuel' || s.type==='famille';
-  }).reduce((s,f)=>s+Number(f.montant),0);
+  }).reduce((s,f)=>s+factureMontants(f).ht,0);
   const caEntreprise = facPeriod.filter(f=>{
     const s = state.seances.find(ss=>ss.id===f.seanceId);
     return s && s.type==='entreprise';
-  }).reduce((s,f)=>s+Number(f.montant),0);
-  const caTotal = facPeriod.reduce((s,f)=>s+Number(f.montant),0);
+  }).reduce((s,f)=>s+factureMontants(f).ht,0);
+  const caTotal = facPeriod.reduce((s,f)=>s+factureMontants(f).ht,0);
   const cotisations = caTotal * taux;
   const deadlines = {1:'30 avril',2:'31 juillet',3:'31 octobre',4:'31 janvier N+1'};
 
@@ -1576,9 +1622,9 @@ function renderUrssafTrimestriel() {
   if (!el) return;
   el.innerHTML = `
     <div class="kpi-grid" style="margin-bottom:var(--space-4);">
-      ${kpiCard('CA séances individuelles', formatAmount(caIndiv))}
-      ${kpiCard('CA entreprise', formatAmount(caEntreprise))}
-      ${kpiCard('CA total T'+q+' '+y, formatAmount(caTotal))}
+      ${kpiCard('CA séances individuelles (HT)', formatAmount(caIndiv))}
+      ${kpiCard('CA entreprise (HT)', formatAmount(caEntreprise))}
+      ${kpiCard('CA total T'+q+' '+y+' (HT)', formatAmount(caTotal))}
       ${kpiCard('Cotisations dues', formatAmount(cotisations), `taux ${(taux*100).toFixed(1)}%`,'warning')}
     </div>
     <div class="alert alert-warning">
@@ -1607,18 +1653,21 @@ async function exportURSSAFTrimestriel(q, y) {
       filters: [{ name: 'Fichier CSV', extensions: ['csv'] }],
     });
     if (!path) return;
-    const headers = ['N° Facture','Date','Patient','Prestation','Montant TTC (€)','Type'];
+    const headers = ['N° Facture','Date','Patient','Prestation','Type prestation','Montant HT (€)','TVA (€)','Montant TTC (€)','Type séance'];
     const rows = facPeriod.map(f => {
       const patient = state.patients.find(p=>p.id===f.patientId);
       const seance = state.seances.find(s=>s.id===f.seanceId);
+      const m = factureMontants(f);
       return [f.numero, f.date, patient?`${patient.prenom} ${patient.nom}`:'',
-        f.prestation||'Consultation', String(f.montant).replace('.',','),
+        f.prestation||'Consultation',
+        f.typePrestation === 'analyse_pratique' ? 'Analyse de pratiques (TVA)' : 'Soin (exonéré)',
+        String(m.ht).replace('.',','), String(m.tva).replace('.',','), String(m.ttc).replace('.',','),
         seance?.type||'individuel'];
     });
-    const caTotal = facPeriod.reduce((s,f)=>s+Number(f.montant),0);
+    const caTotal = facPeriod.reduce((s,f)=>s+factureMontants(f).ht,0);
     const summary = [
-      [], ['CA TOTAL T'+q+' '+y, '', '', '', String(caTotal).replace('.',','), ''],
-      ['COTISATIONS URSSAF ESTIMÉES', '', '', '', String(Math.round(caTotal*taux*100)/100).replace('.',','), ''],
+      [], ['CA HT TOTAL T'+q+' '+y, '', '', '', '', '', String(caTotal).replace('.',','), ''],
+      ['COTISATIONS URSSAF ESTIMÉES', '', '', '', '', '', String(Math.round(caTotal*taux*100)/100).replace('.',','), ''],
     ];
     const csv = '﻿' + [headers,...rows,...summary]
       .map(r=>r.map(v=>`"${String(v||'').replace(/"/g,'""')}"`).join(';'))
@@ -1712,13 +1761,16 @@ async function export2035() {
   const rows = months.map(m => {
     const mFac = state.factures.filter(f=>f.statut==='payee'&&inRange(f.date,m.from,m.to));
     const mSea = state.seances.filter(s=>inRange(s.date,m.from,m.to)&&s.statut==='present');
-    const caIndiv = mFac.filter(f=>{const ss=state.seances.find(s2=>s2.id===f.seanceId);return !ss||ss.type!=='entreprise';}).reduce((a,f)=>a+Number(f.montant),0);
-    const caEnt   = mFac.filter(f=>{const ss=state.seances.find(s2=>s2.id===f.seanceId);return ss&&ss.type==='entreprise';}).reduce((a,f)=>a+Number(f.montant),0);
+    const caIndiv = mFac.filter(f=>{const ss=state.seances.find(s2=>s2.id===f.seanceId);return !ss||ss.type!=='entreprise';}).reduce((a,f)=>a+factureMontants(f).ht,0);
+    const caEnt   = mFac.filter(f=>{const ss=state.seances.find(s2=>s2.id===f.seanceId);return ss&&ss.type==='entreprise';}).reduce((a,f)=>a+factureMontants(f).ht,0);
     const total   = caIndiv + caEnt;
     return { label:m.label, seances:mSea.length, caIndiv, caEnt, total };
   });
 
   const totalAnnuel = rows.reduce((a,r)=>({seances:a.seances+r.seances,caIndiv:a.caIndiv+r.caIndiv,caEnt:a.caEnt+r.caEnt,total:a.total+r.total}),{seances:0,caIndiv:0,caEnt:0,total:0});
+  const tvaCollecteeAnn = state.factures
+    .filter(f=>f.statut==='payee'&&f.typePrestation==='analyse_pratique'&&f.date.startsWith(y+''))
+    .reduce((s,f)=>s+factureMontants(f).tva,0);
 
   const catLabels = { loyer:'Loyer',materiel:'Matériel',formation:'Formation',assurance:'Assurance',logiciel:'Logiciel',autre:'Autre' };
   const chargesAnno = state.charges.filter(c=>c.date.startsWith(y+''));
@@ -1743,14 +1795,16 @@ async function export2035() {
   <p>${praticien} — Psychologue libéral<br>
   ${s.siret?'SIRET : '+escapeHtml(s.siret)+'&nbsp;&nbsp;':''}${s.rpps?'N° RPPS : '+escapeHtml(s.rpps):''}</p>
 
-  <h2>A — Recettes</h2>
+  <h2>A — Recettes (HT)</h2>
+  <p style="font-size:8pt;color:#666;">Montants hors taxes — la TVA collectée sur les analyses de pratiques professionnelles n'est pas un revenu et ne figure pas dans ce total (déclarée séparément en TVA).</p>
   <table>
-    <thead><tr><th>Mois</th><th>Séances</th><th>CA individuel</th><th>CA entreprise</th><th>Total mensuel</th></tr></thead>
+    <thead><tr><th>Mois</th><th>Séances</th><th>CA individuel (HT)</th><th>CA entreprise (HT)</th><th>Total mensuel (HT)</th></tr></thead>
     <tbody>
       ${rows.map(r=>`<tr><td>${r.label}</td><td>${r.seances}</td><td>${formatAmount(r.caIndiv)}</td><td>${formatAmount(r.caEnt)}</td><td>${formatAmount(r.total)}</td></tr>`).join('')}
       <tr class="total"><td>TOTAL ${y}</td><td>${totalAnnuel.seances}</td><td>${formatAmount(totalAnnuel.caIndiv)}</td><td>${formatAmount(totalAnnuel.caEnt)}</td><td>${formatAmount(totalAnnuel.total)}</td></tr>
     </tbody>
   </table>
+  ${tvaCollecteeAnn > 0 ? `<p style="font-size:8pt;color:#666;">TVA collectée sur l'année sur les analyses de pratiques (à déclarer séparément) : <strong>${formatAmount(tvaCollecteeAnn)}</strong></p>` : ''}
 
   <h2>B — Dépenses déductibles</h2>
   <table>
@@ -1942,14 +1996,17 @@ async function exportCSV() {
       filters: [{ name: 'Fichier CSV', extensions: ['csv'] }],
     });
     if (!path) return;
-    const headers = ['N° Facture', 'Date', 'Patient', 'Prestation', 'Durée (min)', 'Montant TTC (€)', 'Statut'];
+    const headers = ['N° Facture', 'Date', 'Patient', 'Prestation', 'Type prestation', 'Durée (min)', 'Montant HT (€)', 'TVA (€)', 'Montant TTC (€)', 'Statut'];
     const rows = state.factures.map(f => {
       const patient = state.patients.find(p => p.id === f.patientId);
+      const m = factureMontants(f);
       return [
         f.numero, f.date,
         patient ? `${patient.prenom} ${patient.nom}` : '',
-        f.prestation, f.duree || '',
-        String(f.montant).replace('.', ','),
+        f.prestation,
+        f.typePrestation === 'analyse_pratique' ? 'Analyse de pratiques (TVA)' : 'Soin (exonéré)',
+        f.duree || '',
+        String(m.ht).replace('.', ','), String(m.tva).replace('.', ','), String(m.ttc).replace('.', ','),
         f.statut === 'payee' ? 'Payée' : f.statut === 'en_attente' ? 'En attente' : 'Annulée',
       ];
     });
@@ -2164,7 +2221,7 @@ function renderPatientInfos(id) {
   if (!p) return;
   const factures = state.factures.filter(f => f.patientId === id)
     .sort((a, b) => b.date.localeCompare(a.date));
-  const caTotal = factures.filter(f => f.statut === 'payee').reduce((s, f) => s + Number(f.montant), 0);
+  const caTotal = factures.filter(f => f.statut === 'payee').reduce((s, f) => s + factureMontants(f).ht, 0);
 
   const hasEmail = !!(p && p.email);
   const facturesHTML = factures.length ? factures.map(f => {
@@ -2304,7 +2361,7 @@ function renderPatients(filter = '') {
   const now_ = Date.now();
   grid.innerHTML = patients.map(p => {
     const factures = state.factures.filter(f => f.patientId === p.id);
-    const ca = factures.reduce((s, f) => s + (f.statut === 'payee' ? Number(f.montant) : 0), 0);
+    const ca = factures.reduce((s, f) => s + (f.statut === 'payee' ? factureMontants(f).ht : 0), 0);
     const patSeances = state.seances.filter(s => s.patientId === p.id);
     const lastSeanceDate = patSeances.map(s => s.date).sort().reverse()[0] || null;
     const daysSinceSeance = lastSeanceDate ? Math.floor((now_ - new Date(lastSeanceDate + 'T12:00:00').getTime()) / 86400000) : 999;
