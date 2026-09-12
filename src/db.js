@@ -703,27 +703,39 @@ export async function exportAllData(db) {
   return { patients, factures, seances, charges, settings, notes, questionnaires, objectifs, _version: 2 };
 }
 
+// Colonnes réelles de chaque table (tenues à jour avec applySchema, migrations incluses).
+// Listées explicitement (plutôt que déduites des clés du JSON importé) pour éviter
+// toute injection via des noms de colonnes arbitraires dans un fichier importé.
+const TABLE_COLUMNS = {
+  patients: ['id','nom','prenom','date_naissance','email','telephone','adresse','mutuelle',
+    'mon_soutien_psy','motif','notes_generales','date_creation','actif','cloture','rgpd',
+    'source_orientation'],
+  seances: ['id','patient_id','date','heure','duree','type','statut','facture','note_ics','uid',
+    'note_interne','mode','honoraires','lien_visio'],
+  factures: ['id','patient_id','seance_id','numero','date','montant','prestation','duree','statut',
+    'mode_paiement','date_paiement','notes_privees','date_creation','num_seq'],
+  charges: ['id','date','libelle','montant','categorie'],
+  notes_cliniques: ['id','patient_id','seance_id','date','template','contenu','date_creation','date_modification'],
+  questionnaires: ['id','patient_id','type','date','reponses','score','interpretation'],
+  objectifs: ['id','patient_id','type','domaine','contenu','statut','date_creation','notes_progression','realise'],
+};
+
 /** Importe un backup v2 (tables brutes) ou v1 (ancien state{}) dans la DB. */
 export async function importAllData(db, data) {
   if (data._version === 2) {
     // Backup v2 : tables brutes
     await db.execute('BEGIN TRANSACTION');
     try {
-      for (const table of ['settings','patients','seances','factures','charges','notes_cliniques','questionnaires','objectifs']) {
+      for (const table of ['settings', ...Object.keys(TABLE_COLUMNS)]) {
         await db.execute(`DELETE FROM ${table}`);
       }
-      const insertMap = {
-        patients: `INSERT INTO patients VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-        factures: `INSERT INTO factures VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-        seances: `INSERT INTO seances VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
-        charges: `INSERT INTO charges VALUES (?,?,?,?,?)`,
-        notes_cliniques: `INSERT INTO notes_cliniques VALUES (?,?,?,?,?,?,?,?)`,
-        questionnaires: `INSERT INTO questionnaires VALUES (?,?,?,?,?,?,?)`,
-        objectifs: `INSERT INTO objectifs VALUES (?,?,?,?,?,?,?,?,?)`,
-      };
-      for (const [table, sql] of Object.entries(insertMap)) {
+      for (const [table, columns] of Object.entries(TABLE_COLUMNS)) {
+        const placeholders = columns.map(() => '?').join(',');
+        const sql = `INSERT INTO ${table} (${columns.join(',')}) VALUES (${placeholders})`;
         for (const row of (data[table] || [])) {
-          await db.execute(sql, Object.values(row));
+          // Colonnes absentes du backup (ajoutées par une migration depuis) → null,
+          // rattrapé au chargement par les valeurs par défaut de loadAll().
+          await db.execute(sql, columns.map(c => row[c] ?? null));
         }
       }
       for (const [key, value] of Object.entries(data.settings || {})) {
