@@ -1,7 +1,7 @@
 import { writeTextFile } from '@tauri-apps/plugin-fs';
 import { open as dialogOpen, save as dialogSave, ask } from '@tauri-apps/plugin-dialog';
 import { openUrl } from '@tauri-apps/plugin-opener';
-import { initDb, loadAll, saveAll, saveSettingsOnly, migrateFromJSON, exportAllData, importAllData, getAnamnese, saveAnamnese, searchAll, getDocuments, getDocumentsByPatient, getDocument, createDocument, updateDocument, deleteDocument as dbDeleteDocument, deletePatientCascade, savePwaCode, loadPwaCodes, markPwaCodeImported, createQuestionnaireCode, getQuestionnaireCodesByPatient, updateQuestionnaireCodeStatut, getQuestionnaireCodeByCode, expireQuestionnaireCodesLocally, insertQuestionnaireResultat, getResultatsByPatient, getResultatsByPatientAndSlug, createAlerteQuestionnaire, getAlertesByPatient, getAlertesNonLues, marquerAlertesLues } from './db.js';
+import { initDb, loadAll, saveAll, saveSettingsOnly, migrateFromJSON, exportAllData, importAllData, autoBackup, getAnamnese, saveAnamnese, searchAll, getDocuments, getDocumentsByPatient, getDocument, createDocument, updateDocument, deleteDocument as dbDeleteDocument, deletePatientCascade, savePwaCode, loadPwaCodes, markPwaCodeImported, createQuestionnaireCode, getQuestionnaireCodesByPatient, updateQuestionnaireCodeStatut, getQuestionnaireCodeByCode, expireQuestionnaireCodesLocally, insertQuestionnaireResultat, getResultatsByPatient, getResultatsByPatientAndSlug, createAlerteQuestionnaire, getAlertesByPatient, getAlertesNonLues, marquerAlertesLues } from './db.js';
 
 // ===== STORAGE CONFIG =====
 let _db = null; // instance SQLite partagée
@@ -51,6 +51,7 @@ async function loadState() {
       // Affiche la notification après le premier rendu
       setTimeout(() => toast('Migration effectuée — vos données ont été importées dans la nouvelle base de données ✓'), 800);
     }
+    autoBackup(_db).catch(e => console.error('autoBackup:', e)); // best-effort, non bloquant
     return state.patients.length > 0 || state.factures.length > 0 || migrated;
   } catch (e) {
     console.error('loadState:', e);
@@ -188,7 +189,7 @@ function urssafRate() { return (state.settings.tauxUrssaf ?? 21.2) / 100; }
 function dataFilePath() {
   // Affiche un chemin lisible selon l'OS
   const home = '~';
-  return `${home}/Documents/PsyGest/data.json`;
+  return `${home}/Documents/PsyGest/psygest.db`;
 }
 
 // ===== PATIENTS =====

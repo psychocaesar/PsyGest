@@ -4,7 +4,7 @@
  */
 import Database from '@tauri-apps/plugin-sql';
 import { documentDir, join } from '@tauri-apps/api/path';
-import { mkdir, exists, readTextFile, writeTextFile, BaseDirectory } from '@tauri-apps/plugin-fs';
+import { mkdir, exists, readTextFile, writeTextFile, readDir, remove, BaseDirectory } from '@tauri-apps/plugin-fs';
 
 // ─── Initialisation ───────────────────────────────────────────────────────────
 
@@ -722,19 +722,30 @@ export async function deletePatientCascade(db, patientId) {
 
 /** Sérialise toutes les tables en un objet JSON exportable. */
 export async function exportAllData(db) {
-  const [patients, factures, seances, charges, settingsRows, notes, questionnaires, objectifs] =
-    await Promise.all([
-      db.select('SELECT * FROM patients'),
-      db.select('SELECT * FROM factures'),
-      db.select('SELECT * FROM seances'),
-      db.select('SELECT * FROM charges'),
-      db.select('SELECT key, value FROM settings'),
-      db.select('SELECT * FROM notes_cliniques'),
-      db.select('SELECT * FROM questionnaires'),
-      db.select('SELECT * FROM objectifs'),
-    ]);
+  const [
+    patients, factures, seances, charges, settingsRows, notes, questionnaires, objectifs,
+    anamnese, documents, questionnaire_codes, questionnaire_resultats, alertes_questionnaires,
+  ] = await Promise.all([
+    db.select('SELECT * FROM patients'),
+    db.select('SELECT * FROM factures'),
+    db.select('SELECT * FROM seances'),
+    db.select('SELECT * FROM charges'),
+    db.select('SELECT key, value FROM settings'),
+    db.select('SELECT * FROM notes_cliniques'),
+    db.select('SELECT * FROM questionnaires'),
+    db.select('SELECT * FROM objectifs'),
+    db.select('SELECT * FROM anamnese'),
+    db.select('SELECT * FROM documents'),
+    db.select('SELECT * FROM questionnaire_codes'),
+    db.select('SELECT * FROM questionnaire_resultats'),
+    db.select('SELECT * FROM alertes_questionnaires'),
+  ]);
   const settings = Object.fromEntries(settingsRows.map(r => [r.key, r.value]));
-  return { patients, factures, seances, charges, settings, notes, questionnaires, objectifs, _version: 2 };
+  return {
+    patients, factures, seances, charges, settings, notes, questionnaires, objectifs,
+    anamnese, documents, questionnaire_codes, questionnaire_resultats, alertes_questionnaires,
+    _version: 2,
+  };
 }
 
 // Colonnes réelles de chaque table (tenues à jour avec applySchema, migrations incluses).
@@ -752,6 +763,17 @@ const TABLE_COLUMNS = {
   notes_cliniques: ['id','patient_id','seance_id','date','template','contenu','date_creation','date_modification'],
   questionnaires: ['id','patient_id','type','date','reponses','score','interpretation'],
   objectifs: ['id','patient_id','type','domaine','contenu','statut','date_creation','notes_progression','realise'],
+  anamnese: ['id','patient_id','motif_principal','motif_depuis','tentatives_anterieures',
+    'contexte_apparition','facteurs_declenchants','evolution','atcd_personnels','atcd_familiaux',
+    'hospitalisations','traumatismes','situation_pro','situation_familiale','enfants','lieu_vie',
+    'traitements','autres_suivis','hypotheses_diagnostiques','orientation_therapeutique',
+    'objectifs_prise_en_charge','indication_suivi','date_creation','date_modification'],
+  documents: ['id','patient_id','type','titre','contenu','statut','destinataire','date_creation','date_modification'],
+  questionnaire_codes: ['id','patient_id','code','questionnaire_slug','date_creation','date_expiration','statut','date_completion'],
+  questionnaire_resultats: ['id','patient_id','questionnaire_slug','code','date_passation','score_total',
+    'interpretation','details_json','synchro_date','consentement_recueilli'],
+  alertes_questionnaires: ['id','patient_id','questionnaire_slug','code','date_passation','type_alerte',
+    'message','score_actuel','score_precedent','lu','date_creation'],
 };
 
 /** Importe un backup v2 (tables brutes) ou v1 (ancien state{}) dans la DB. */
@@ -791,6 +813,46 @@ export async function importAllData(db, data) {
       nextFactureNum: data.nextFactureNum || 1,
     };
     await saveAll(db, migState);
+  }
+}
+
+// ─── Sauvegarde automatique locale ─────────────────────────────────────────────
+
+const BACKUPS_DIR = 'PsyGest/backups';
+const AUTO_BACKUP_RETENTION = 30; // conserve les 30 dernières sauvegardes auto (~1 mois à raison d'1/jour)
+
+/**
+ * Écrit un export JSON complet dans ~/Documents/PsyGest/backups/ une fois par
+ * jour (au premier lancement de la journée), puis purge les plus anciennes
+ * au-delà de AUTO_BACKUP_RETENTION. Ce dossier peut ensuite être répliqué vers
+ * un NAS/serveur par un outil externe (Syncthing, etc.) — PsyGest ne parle à
+ * aucun serveur distant lui-même.
+ * Best-effort : une erreur ici ne doit jamais empêcher le démarrage de l'app.
+ * Retourne true si une nouvelle sauvegarde a été écrite.
+ */
+export async function autoBackup(db) {
+  try {
+    await mkdir(BACKUPS_DIR, { baseDir: BaseDirectory.Document, recursive: true });
+    const todayStr = new Date().toISOString().slice(0, 10);
+    const filePath = `${BACKUPS_DIR}/psygest-backup-${todayStr}.json`;
+    if (await exists(filePath, { baseDir: BaseDirectory.Document })) return false;
+
+    const data = await exportAllData(db);
+    await writeTextFile(filePath, JSON.stringify(data, null, 2), { baseDir: BaseDirectory.Document });
+
+    const entries = await readDir(BACKUPS_DIR, { baseDir: BaseDirectory.Document });
+    const files = entries
+      .map(e => e.name)
+      .filter(n => n && /^psygest-backup-\d{4}-\d{2}-\d{2}\.json$/.test(n))
+      .sort(); // tri lexical = tri chronologique (format AAAA-MM-JJ)
+    const toDelete = files.slice(0, Math.max(0, files.length - AUTO_BACKUP_RETENTION));
+    for (const f of toDelete) {
+      try { await remove(`${BACKUPS_DIR}/${f}`, { baseDir: BaseDirectory.Document }); } catch (_) {}
+    }
+    return true;
+  } catch (e) {
+    console.error('autoBackup:', e);
+    return false;
   }
 }
 

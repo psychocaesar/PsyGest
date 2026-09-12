@@ -30,6 +30,14 @@
       "identifier": "fs:allow-mkdir",
       "allow": [{ "path": "$DOCUMENT/PsyGest/**" }]
     },
+    {
+      "identifier": "fs:allow-read-dir",
+      "allow": [{ "path": "$DOCUMENT/PsyGest/**" }]
+    },
+    {
+      "identifier": "fs:allow-remove",
+      "allow": [{ "path": "$DOCUMENT/PsyGest/**" }]
+    },
     "dialog:allow-open",
     "dialog:allow-save",
     "dialog:allow-ask",
