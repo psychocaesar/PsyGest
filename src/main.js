@@ -278,7 +278,7 @@ function updateFactureTvaHint() {
 window.updateFactureTvaHint = updateFactureTvaHint;
 
 async function saveFacture() {
-  const patientId = parseInt(document.getElementById('f-patient').value);
+  const patientId = document.getElementById('f-patient').value;
   const date = document.getElementById('f-date').value;
   const montant = parseFloat(document.getElementById('f-montant').value);
   if (!patientId || !date || isNaN(montant) || montant <= 0) {
