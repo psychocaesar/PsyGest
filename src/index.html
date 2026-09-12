@@ -259,14 +259,14 @@
       </div>
     </div>
 
-    <!-- Panneau import iCal / Calendly -->
+    <!-- Panneau import iCal (Doctolib, cal.com, Apple Calendar, Calendly, ou tout flux .ics) -->
     <div class="ics-panel" id="ics-panel" style="display:none;">
-      <div class="settings-section-title" style="margin-bottom:var(--space-4);">Import depuis Calendly ou un fichier .ics</div>
+      <div class="settings-section-title" style="margin-bottom:var(--space-4);">Import depuis un flux iCal (Doctolib, cal.com, Apple Calendar…) ou un fichier .ics</div>
       <div style="display:flex;gap:var(--space-3);align-items:flex-end;flex-wrap:wrap;">
         <div class="form-group" style="flex:1;min-width:280px;">
           <label for="calendly-url">URL de votre flux iCal</label>
-          <input class="form-input" id="calendly-url" placeholder="https://calendly.com/events/ical/XXXXX.ics">
-          <div class="form-hint">Dans Calendly : <strong>Paramètres → Calendrier → Lien d'abonnement iCal</strong>. Copiez l'URL et collez-la ici.</div>
+          <input class="form-input" id="calendly-url" placeholder="webcal://... ou https://.../XXXXX.ics">
+          <div class="form-hint">Accepte n'importe quel flux iCal standard — export Doctolib Pro, cal.com, un calendrier Apple partagé publiquement, Calendly, etc. Une fois enregistrée, l'URL est revérifiée automatiquement toutes les 15 minutes tant que PsyGest est ouvert (rien à faire, seules les nouvelles séances déclenchent une notification).</div>
         </div>
         <div style="display:flex;gap:var(--space-2);flex-shrink:0;">
           <button class="btn btn-secondary btn-sm" onclick="importICSUrl()"><i data-lucide="link"></i> Depuis l'URL</button>

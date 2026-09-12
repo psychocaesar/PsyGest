@@ -828,6 +828,29 @@ window.calNext = calNext;
 window.addSeanceOnDay = addSeanceOnDay;
 
 // ===== ICS IMPORT =====
+// Convertit un horodatage ICS en date/heure locales Europe/Paris.
+// Les flux ICS "flottants" ou TZID=Europe/Paris (le cas le plus courant pour un
+// cabinet français) sont déjà en heure locale : les chiffres se lisent tels
+// quels. Mais certains générateurs (cal.com notamment) exportent en UTC
+// (suffixe "Z") — sans conversion, l'horaire importé serait décalé d'1h à 2h
+// selon l'heure d'été/hiver.
+function icsLocalDateTime(datePart, timePart, isUTC) {
+  if (!isUTC || !timePart) {
+    return {
+      date: datePart && datePart.length >= 8
+        ? `${datePart.substring(0, 4)}-${datePart.substring(4, 6)}-${datePart.substring(6, 8)}`
+        : null,
+      heure: timePart && timePart.length >= 4 ? `${timePart.substring(0, 2)}:${timePart.substring(2, 4)}` : null,
+    };
+  }
+  const utcMs = Date.UTC(
+    +datePart.substring(0, 4), +datePart.substring(4, 6) - 1, +datePart.substring(6, 8),
+    +timePart.substring(0, 2), +timePart.substring(2, 4)
+  );
+  const [d, t] = new Date(utcMs).toLocaleString('sv-SE', { timeZone: 'Europe/Paris' }).split(' ');
+  return { date: d, heure: t.substring(0, 5) };
+}
+
 function parseICS(text) {
   const events = [];
   // Dépliage des lignes (RFC 5545 : continuation = espace/tab en début)
@@ -855,26 +878,23 @@ function parseICS(text) {
     const value = line.substring(colonIdx + 1);
 
     if (key === 'DTSTART') {
+      const isUTC = /Z$/.test(value);
       const v = value.replace(/Z$/, '');
       const bare = v.includes('T') ? v.split('T') : [v, null];
-      const datePart = bare[0];
-      const timePart = bare[1];
-      if (datePart && datePart.length >= 8) {
-        cur.date = `${datePart.substring(0, 4)}-${datePart.substring(4, 6)}-${datePart.substring(6, 8)}`;
-      }
-      if (timePart && timePart.length >= 4) {
-        cur.heure = `${timePart.substring(0, 2)}:${timePart.substring(2, 4)}`;
-      }
+      const { date, heure } = icsLocalDateTime(bare[0], bare[1], isUTC);
+      if (date) cur.date = date;
+      if (heure) cur.heure = heure;
     }
     if (key === 'DTEND') {
+      const isUTC = /Z$/.test(value);
       const v = value.replace(/Z$/, '');
       const bare = v.includes('T') ? v.split('T') : [v, null];
-      const timePart = bare[1];
-      if (timePart && cur.heure && cur.date) {
+      const { date: endDate, heure: endHeure } = icsLocalDateTime(bare[0], bare[1], isUTC);
+      if (endHeure && cur.heure && cur.date) {
         const startMs = new Date(`${cur.date}T${cur.heure}:00`).getTime();
-        const endH = timePart.substring(0, 2);
-        const endM = timePart.substring(2, 4);
-        const endMs = new Date(`${cur.date}T${endH}:${endM}:00`).getTime();
+        // DTEND peut tomber le lendemain (ex. UTC proche de minuit) — on utilise sa
+        // propre date locale plutôt que de supposer la même que DTSTART.
+        const endMs = new Date(`${endDate || cur.date}T${endHeure}:00`).getTime();
         cur.duree = Math.max(5, Math.round((endMs - startMs) / 60000));
       }
     }
@@ -910,24 +930,48 @@ async function importICSUrl() {
   await saveState();
 
   toast('Téléchargement du calendrier…', 'info');
+  await refreshICSFeed({ silent: false });
+}
+window.importICSUrl = importICSUrl;
+
+// ── Auto-refresh du flux iCal (Doctolib/cal.com/Apple Calendar…) ───────────────
+// Récupère périodiquement le flux configuré dans Réglages tant que l'app tourne.
+// Silencieux sauf quand de nouvelles séances sont réellement importées — sinon un
+// toast toutes les 15 min pour "rien de nouveau" serait vite agaçant.
+const ICS_AUTO_REFRESH_MS = 15 * 60 * 1000;
+let _icsAutoRefreshTimer = null;
+let _icsAutoRefreshInFlight = false;
+
+async function refreshICSFeed({ silent = false } = {}) {
+  const url = (state.settings.calendlyUrl || '').trim();
+  if (!url || _icsAutoRefreshInFlight) return;
+  _icsAutoRefreshInFlight = true;
   try {
-    // Remplacer webcal:// par https://
     const fetchUrl = url.replace(/^webcal:\/\//i, 'https://');
     const resp = await fetch(fetchUrl);
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const text = await resp.text();
     const events = parseICS(text);
-    await importICSEvents(events);
+    await importICSEvents(events, { silent });
   } catch (e) {
-    toast(`Impossible de charger le calendrier : ${e.message}. Essayez l'import par fichier .ics.`, 'error');
-    console.error(e);
+    console.error('refreshICSFeed:', e);
+    if (!silent) toast(`Impossible de charger le calendrier : ${e.message}. Essayez l'import par fichier .ics.`, 'error');
+  } finally {
+    _icsAutoRefreshInFlight = false;
   }
 }
-window.importICSUrl = importICSUrl;
+window.refreshICSFeed = refreshICSFeed;
 
-async function importICSEvents(events) {
+function startICSAutoRefresh() {
+  if (_icsAutoRefreshTimer) return;
+  // Premier essai peu après le démarrage (état déjà chargé), puis à intervalle régulier.
+  setTimeout(() => refreshICSFeed({ silent: true }), 30000);
+  _icsAutoRefreshTimer = setInterval(() => refreshICSFeed({ silent: true }), ICS_AUTO_REFRESH_MS);
+}
+
+async function importICSEvents(events, { silent = false } = {}) {
   if (!events.length) {
-    toast('Aucun événement trouvé dans ce fichier.', 'error');
+    if (!silent) toast('Aucun événement trouvé dans ce fichier.', 'error');
     return;
   }
 
@@ -959,7 +1003,7 @@ async function importICSEvents(events) {
   }
 
   if (added === 0) {
-    toast('Aucune nouvelle séance (tous les événements existent déjà).');
+    if (!silent) toast('Aucune nouvelle séance (tous les événements existent déjà).');
     return;
   }
 
@@ -4666,6 +4710,7 @@ async function init() {
     );
   }
   if (!hasData) navigate('settings');
+  if (!_dbInitFailed) startICSAutoRefresh();
 }
 
 init();
