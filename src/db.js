@@ -209,6 +209,7 @@ async function applySchema(db) {
     'ALTER TABLE factures ADD COLUMN type TEXT DEFAULT \'facture\'',
     'ALTER TABLE factures ADD COLUMN facture_origine_id TEXT',
     'ALTER TABLE factures ADD COLUMN type_prestation TEXT DEFAULT \'soin\'',
+    'ALTER TABLE factures ADD COLUMN patient_nom TEXT',
   ];
   for (const sql of migrations) {
     try { await db.execute(sql); } catch (_) {}
@@ -352,6 +353,7 @@ export async function loadAll(db) {
     type: row.type || 'facture',
     factureOrigineId: row.facture_origine_id || null,
     typePrestation: row.type_prestation || 'soin',
+    patientNom: row.patient_nom || null,
   }));
 
   // Charges → camelCase
@@ -515,14 +517,15 @@ async function saveFacturesAll(db, factures) {
   for (const f of factures) {
     await db.execute(
       `INSERT INTO factures (id,patient_id,numero,date,montant,prestation,duree,statut,
-         notes_privees,date_creation,num_seq,type,facture_origine_id,type_prestation)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+         notes_privees,date_creation,num_seq,type,facture_origine_id,type_prestation,patient_nom)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       [
         String(f.id), String(f.patientId), f.numero, f.date, f.montant,
         f.prestation || 'Consultation psychologique', f.duree || 50,
         f.statut || 'en_attente', f.notes || null,
         f.dateCreation || f.date, f.numSeq || 0,
         f.type || 'facture', f.factureOrigineId || null, f.typePrestation || 'soin',
+        f.patientNom || null,
       ]
     );
   }
@@ -590,7 +593,7 @@ export async function searchAll(db, query) {
   const like = `%${query}%`;
   const patients = await db.select(`SELECT id, nom, prenom FROM patients WHERE LOWER(nom || ' ' || prenom) LIKE LOWER(?) AND actif = 1 LIMIT 5`, [like]);
   const notes = await db.select(`SELECT id, patient_id, date, template, contenu FROM notes_cliniques WHERE LOWER(contenu) LIKE LOWER(?) ORDER BY date DESC LIMIT 5`, [like]);
-  const factures = await db.select(`SELECT id, numero, date, montant, statut, patient_id FROM factures WHERE LOWER(numero) LIKE LOWER(?) LIMIT 5`, [like]);
+  const factures = await db.select(`SELECT id, numero, date, montant, statut, patient_id, patient_nom FROM factures WHERE LOWER(numero) LIKE LOWER(?) LIMIT 5`, [like]);
   const seances = await db.select(`SELECT id, date, heure, patient_id, type FROM seances WHERE date LIKE ? OR note_ics LIKE ? LIMIT 5`, [like, like]);
   return { patients, notes, factures, seances };
 }
@@ -760,7 +763,7 @@ const TABLE_COLUMNS = {
     'note_interne','mode','honoraires','lien_visio'],
   factures: ['id','patient_id','seance_id','numero','date','montant','prestation','duree','statut',
     'mode_paiement','date_paiement','notes_privees','date_creation','num_seq','type','facture_origine_id',
-    'type_prestation'],
+    'type_prestation','patient_nom'],
   charges: ['id','date','libelle','montant','categorie'],
   notes_cliniques: ['id','patient_id','seance_id','date','template','contenu','date_creation','date_modification'],
   questionnaires: ['id','patient_id','type','date','reponses','score','interpretation'],
@@ -835,7 +838,8 @@ const AUTO_BACKUP_RETENTION = 30; // conserve les 30 dernières sauvegardes auto
 export async function autoBackup(db) {
   try {
     await mkdir(BACKUPS_DIR, { baseDir: BaseDirectory.Document, recursive: true });
-    const todayStr = new Date().toISOString().slice(0, 10);
+    const d = new Date(); // jour local, pas UTC (toISOString donnerait la veille entre 0 h et 2 h)
+    const todayStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
     const filePath = `${BACKUPS_DIR}/psygest-backup-${todayStr}.json`;
     if (await exists(filePath, { baseDir: BaseDirectory.Document })) return false;
 

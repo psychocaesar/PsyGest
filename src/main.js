@@ -47,6 +47,7 @@ async function loadState() {
     const loaded = await loadAll(_db);
     state.patients = loaded.patients;
     state.factures = loaded.factures;
+    figerNomsPatientsFactures();
     state.seances = loaded.seances;
     state.charges = loaded.charges;
     state.nextFactureNum = loaded.nextFactureNum || 1;
@@ -191,7 +192,13 @@ function escapeHtml(s) {
   if (s === null || s === undefined) return '';
   return String(s).replace(/[&<>"']/g, c => _escapeHtmlMap[c]);
 }
-function today() { return new Date().toISOString().split('T')[0]; }
+// Date locale AAAA-MM-JJ. Ne pas utiliser toISOString() : il est en UTC et donne la
+// veille entre minuit et 1 h (2 h en été) en France.
+function ymd(d) { return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; }
+function today() { return ymd(new Date()); }
+// Les horodatages (dateCreation…) sont stockés en ISO UTC : on les ramène au jour local.
+// Une date seule (AAAA-MM-JJ, anciennes données) est déjà un jour local.
+function jourLocal(iso) { return !iso || iso.length <= 10 ? iso : ymd(new Date(iso)); }
 function formatNum(n) { return 'FAC-' + new Date().getFullYear() + '-' + String(n).padStart(4, '0'); }
 function formatDate(d) { if (!d) return '—'; return new Date(d + 'T12:00:00').toLocaleDateString('fr-FR'); }
 function formatAmount(a) { return Number(a).toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' €'; }
@@ -210,6 +217,23 @@ function factureMontants(f) {
     return { ht, tva: Math.round((ttc - ht) * 100) / 100, ttc, tauxTva: TAUX_TVA_ANALYSE_PRATIQUE };
   }
   return { ht: ttc, tva: 0, ttc, tauxTva: 0 };
+}
+
+// Nom du patient tel qu'imprimé sur la facture à son émission (copié dessus), à défaut
+// le dossier actuel. Une facture émise ne doit pas changer si le dossier est renommé,
+// et doit rester lisible s'il est supprimé (conservation obligatoire des factures).
+// Factures créées avant l'ajout du nom figé : on le recopie depuis le dossier. Il est
+// écrit en base à la prochaine sauvegarde.
+function figerNomsPatientsFactures() {
+  for (const f of state.factures) {
+    if (!f.patientNom) f.patientNom = facturePatientNom(f) || null;
+  }
+}
+
+function facturePatientNom(f) {
+  if (f.patientNom) return f.patientNom;
+  const p = state.patients.find(pp => pp.id === f.patientId);
+  return p ? `${p.prenom} ${p.nom}` : '';
 }
 function dataFilePath() {
   // Affiche un chemin lisible selon l'OS
@@ -290,6 +314,7 @@ async function saveFacture() {
     id: String(Date.now()),
     numero: formatNum(state.nextFactureNum),
     patientId, date, montant,
+    patientNom: facturePatientNom({ patientId }) || null,
     typePrestation: document.getElementById('f-type-prestation')?.value || 'soin',
     prestation: document.getElementById('f-prestation').value || 'Consultation psychologique',
     duree: document.getElementById('f-duree').value,
@@ -329,9 +354,8 @@ function renderFactures() {
   const tbody = document.getElementById('factures-table');
   let factures = state.factures.slice().reverse();
   if (_filterText) factures = factures.filter(f => {
-    const p = state.patients.find(pp => pp.id === f.patientId);
     return f.numero.toLowerCase().includes(_filterText) ||
-      (p && `${p.prenom} ${p.nom}`.toLowerCase().includes(_filterText));
+      facturePatientNom(f).toLowerCase().includes(_filterText);
   });
   if (_filterStatus) factures = factures.filter(f => f.statut === _filterStatus);
   if (!factures.length) {
@@ -344,7 +368,7 @@ function renderFactures() {
     const canAvoir = f.type !== 'avoir' && f.statut !== 'annulee';
     return `<tr class="tr-clickable" onclick="apercuFacture(${f.id})">
       <td><span class="td-name">${escapeHtml(f.numero)}</span></td>
-      <td>${patient ? `<span class="td-name">${escapeHtml(patient.prenom)} ${escapeHtml(patient.nom)}</span>` : '<span style="color:var(--color-text-muted)">—</span>'}</td>
+      <td>${facturePatientNom(f) ? `<span class="td-name">${escapeHtml(facturePatientNom(f))}</span>` : '<span style="color:var(--color-text-muted)">—</span>'}</td>
       <td>${formatDate(f.date)}</td>
       <td>${escapeHtml(f.prestation)}</td>
       <td><strong>${formatAmount(f.montant)}</strong></td>
@@ -412,12 +436,12 @@ function apercuFacture(id) {
           <div style="font-size:12px;color:#888;margin-bottom:4px;">${f.type === 'avoir' ? 'AVOIR' : 'FACTURE'}</div>
           <div class="inv-num">${escapeHtml(f.numero)}</div>
           <div style="font-size:12px;color:#888;margin-top:6px;">Date : ${formatDate(f.date)}</div>
-          <div style="font-size:12px;color:#888;">Émise le : ${formatDate(f.dateCreation.split('T')[0])}</div>
+          <div style="font-size:12px;color:#888;">Émise le : ${formatDate(jourLocal(f.dateCreation))}</div>
         </div>
       </div>
       ${origine ? `<div style="font-size:12px;color:#888;margin-bottom:var(--space-3);">Annule et remplace la facture <strong>${escapeHtml(origine.numero)}</strong> du ${formatDate(origine.date)}.</div>` : ''}
       <div class="invoice-patient">
-        <strong>Patient :</strong> ${patient ? `${escapeHtml(patient.prenom)} ${escapeHtml(patient.nom)}` : '—'}
+        <strong>Patient :</strong> ${escapeHtml(facturePatientNom(f)) || '—'}
         ${patient && patient.email ? `<br>Email : ${escapeHtml(patient.email)}` : ''}
         ${patient && patient.tel ? `<br>Tél : ${escapeHtml(patient.tel)}` : ''}
       </div>
@@ -474,9 +498,8 @@ function openAvoirModal(id) {
   if (f.type === 'avoir') { toast("Un avoir ne peut pas lui-même faire l'objet d'un avoir.", 'error'); return; }
   if (f.statut === 'annulee') { toast('Cette facture est déjà annulée par un avoir.', 'error'); return; }
   _avoirFactureId = f.id;
-  const patient = state.patients.find(p => p.id === f.patientId);
   document.getElementById('avoir-facture-summary').innerHTML = `
-    <div><strong>${escapeHtml(f.numero)}</strong> — ${patient ? `${escapeHtml(patient.prenom)} ${escapeHtml(patient.nom)}` : '—'}</div>
+    <div><strong>${escapeHtml(f.numero)}</strong> — ${escapeHtml(facturePatientNom(f)) || '—'}</div>
     <div style="font-size:var(--text-sm);color:var(--color-text-muted);margin-top:4px;">${escapeHtml(f.prestation)} · ${formatDate(f.date)} · <strong>${formatAmount(f.montant)}</strong></div>
   `;
   document.getElementById('av-motif').value = '';
@@ -494,6 +517,7 @@ async function saveAvoir() {
     id: String(Date.now()),
     numero: formatNum(state.nextFactureNum),
     patientId: f.patientId,
+    patientNom: facturePatientNom(f) || null,
     date: today(),
     montant: -Math.abs(Number(f.montant)),
     typePrestation: f.typePrestation || 'soin',
@@ -951,6 +975,7 @@ function parseICS(text) {
     if (key === 'SUMMARY') cur.note = value.replace(/\\n/g, ' ').replace(/\\,/g, ',');
     if (key === 'DESCRIPTION') cur.description = value.replace(/\\n/gi, ' ').replace(/\\([,;\\])/g, '$1');
     if (key === 'UID') cur.uid = value;
+    if (key === 'STATUS') cur.status = value.trim().toUpperCase();
   }
   return events;
 }
@@ -1049,7 +1074,7 @@ async function refreshICSFeed({ silent = false } = {}) {
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const text = await resp.text();
     const events = parseICS(text);
-    await importICSEvents(events, { silent });
+    await importICSEvents(events, { silent, depuisFlux: true });
   } catch (e) {
     console.error('refreshICSFeed:', e);
     if (!silent) toast(`Impossible de charger le calendrier : ${e.message}. Essayez l'import par fichier .ics.`, 'error');
@@ -1066,7 +1091,13 @@ function startICSAutoRefresh() {
   _icsAutoRefreshTimer = setInterval(() => refreshICSFeed({ silent: true }), ICS_AUTO_REFRESH_MS);
 }
 
-async function importICSEvents(events, { silent = false } = {}) {
+// Une séance importée suit le calendrier source tant qu'elle n'a pas été traitée dans
+// PsyGest : on ne touche jamais une séance marquée présent/absent/annulé ou facturée.
+function seanceSuitLeCalendrier(s) {
+  return (!s.statut || s.statut === 'planifie' || s.statut === 'confirme') && !s.facture;
+}
+
+async function importICSEvents(events, { silent = false, depuisFlux = false } = {}) {
   if (!events.length) {
     if (!silent) toast('Aucun événement trouvé dans ce fichier.', 'error');
     return;
@@ -1084,19 +1115,36 @@ async function importICSEvents(events, { silent = false } = {}) {
   // séances d'un même import partageaient le même id. Suffixe numérique (pas de
   // tiret) car certains onclick passent l'id sans guillemets.
   const base = Date.now();
-  let added = 0, linked = 0, unlinked = 0;
+  let added = 0, linked = 0, unlinked = 0, deplaces = 0, annules = 0;
   for (const ev of retenus) {
     const slot = ev.date + 'T' + (ev.heure || '');
     const existante = ev.uid ? byUid.get(ev.uid) : bySlot.get(slot);
+    const annuleSource = ev.status === 'CANCELLED';
     if (existante) {
+      if (seanceSuitLeCalendrier(existante)) {
+        if (annuleSource) {
+          existante.statut = 'annule';
+          annules++;
+          continue;
+        }
+        // Rendez-vous déplacé dans Doctolib/cal.com : même UID, nouvel horaire.
+        const heure = ev.heure || '00:00';
+        if (existante.date !== ev.date || existante.heure !== heure || (ev.duree && existante.duree !== ev.duree)) {
+          existante.date = ev.date;
+          existante.heure = heure;
+          if (ev.duree) existante.duree = ev.duree;
+          deplaces++;
+        }
+      }
       // Rendez-vous déjà importé mais pas encore rattaché (ex. dossier patient créé
       // depuis) : on retente, sans jamais écraser un rattachement existant.
-      if (!existante.patientId) {
+      if (!existante.patientId && !annuleSource) {
         const pid = patientPourEvenement(ev, state.patients);
         if (pid) { existante.patientId = pid; linked++; }
       }
       continue;
     }
+    if (annuleSource) continue;
 
     const patientId = patientPourEvenement(ev, state.patients);
     const seance = {
@@ -1117,8 +1165,28 @@ async function importICSEvents(events, { silent = false } = {}) {
     if (patientId) linked++; else unlinked++;
   }
 
+  // Rendez-vous supprimés du calendrier source (une annulation cal.com ou Doctolib
+  // retire souvent l'événement au lieu de le marquer annulé) : seulement pour le flux
+  // URL, qui contient tout le calendrier — un fichier .ics importé à la main peut
+  // n'en être qu'un extrait. Comparé à tous les événements, filtre compris, pour
+  // qu'un mot-clé retiré du filtre n'annule rien. Si aucune séance connue n'est dans
+  // le flux (URL changée pour un autre calendrier), on ne touche à rien.
+  if (depuisFlux) {
+    const uidsFlux = new Set(events.map(e => e.uid).filter(Boolean));
+    const connues = state.seances.some(s => s.uid && uidsFlux.has(s.uid));
+    const auj = today();
+    if (connues) {
+      for (const s of state.seances) {
+        if (s.uid && !uidsFlux.has(s.uid) && s.date >= auj && seanceSuitLeCalendrier(s)) {
+          s.statut = 'annule';
+          annules++;
+        }
+      }
+    }
+  }
+
   const filtreInfo = ignores ? ` ${ignores} événement(s) ignoré(s) par le filtre d'import.` : '';
-  if (added === 0 && linked === 0) {
+  if (added === 0 && linked === 0 && deplaces === 0 && annules === 0) {
     if (!silent) {
       toast(retenus.length
         ? `Aucune nouvelle séance (tous les rendez-vous existent déjà).${filtreInfo}`
@@ -1134,6 +1202,8 @@ async function importICSEvents(events, { silent = false } = {}) {
   if (added) parts.push(`${added} séance(s) importée(s)`);
   if (linked) parts.push(`${linked} rattachée(s) à un dossier patient`);
   if (unlinked) parts.push(`${unlinked} à lier à la main`);
+  if (deplaces) parts.push(`${deplaces} déplacée(s)`);
+  if (annules) parts.push(`${annules} annulée(s)`);
   toast(`${parts.join(', ')} ✓${silent ? '' : filtreInfo}`);
 }
 
@@ -1240,8 +1310,7 @@ function refreshDashboard() {
     return;
   }
   tbody.innerHTML = last5.map(f => {
-    const patient = state.patients.find(p => p.id === f.patientId);
-    return `<tr class="tr-clickable" onclick="apercuFacture(${f.id})"><td>${escapeHtml(f.numero)}</td><td>${patient ? escapeHtml(patient.prenom) + ' ' + escapeHtml(patient.nom) : '—'}</td><td>${formatDate(f.date)}</td><td>${formatAmount(f.montant)}</td><td>${factureBadge(f)}</td></tr>`;
+    return `<tr class="tr-clickable" onclick="apercuFacture(${f.id})"><td>${escapeHtml(f.numero)}</td><td>${escapeHtml(facturePatientNom(f)) || '—'}</td><td>${formatDate(f.date)}</td><td>${formatAmount(f.montant)}</td><td>${factureBadge(f)}</td></tr>`;
   }).join('');
 }
 
@@ -1519,7 +1588,7 @@ function renderStatsPatients(from, to) {
   if (!el) return;
   const seancesPeriod = state.seances.filter(s=>inRange(s.date,from,to));
   const patientsActifIds = new Set(seancesPeriod.filter(s=>s.patientId).map(s=>s.patientId));
-  const nouveaux = state.patients.filter(p=>p.dateCreation&&p.dateCreation.slice(0,10)>=from&&p.dateCreation.slice(0,10)<=to).length;
+  const nouveaux = state.patients.filter(p=>p.dateCreation&&jourLocal(p.dateCreation)>=from&&jourLocal(p.dateCreation)<=to).length;
   const enCours = patientsActifIds.size;
   const termines = state.patients.filter(p=>p.cloture).length;
 
@@ -1592,7 +1661,7 @@ function renderStatsFinancier(from, to) {
   const paiementsAvecDate = state.factures.filter(f=>f.statut==='payee'&&f.dateCreation);
   const delaiMoy = paiementsAvecDate.length
     ? Math.round(paiementsAvecDate.reduce((s,f)=>{
-        const diff=(new Date(f.date+'T12:00')-new Date(f.dateCreation.slice(0,10)+'T12:00'))/(1000*60*60*24);
+        const diff=(new Date(f.date+'T12:00')-new Date(jourLocal(f.dateCreation)+'T12:00'))/(1000*60*60*24);
         return s+Math.max(0,diff);
       },0)/paiementsAvecDate.length)
     : 0;
@@ -1617,10 +1686,9 @@ function renderStatsFinancier(from, to) {
 
   // Tableau impayées
   const impayeesRows = impayeesAll.map(f => {
-    const patient = state.patients.find(p=>p.id===f.patientId);
     const jours = Math.floor((Date.now()-new Date(f.date+'T12:00').getTime())/86400000);
     return `<tr>
-      <td>${patient?escapeHtml(patient.prenom)+' '+escapeHtml(patient.nom):'—'}</td>
+      <td>${escapeHtml(facturePatientNom(f)) || '—'}</td>
       <td>${escapeHtml(f.numero)}</td>
       <td>${formatDate(f.date)}</td>
       <td>${formatAmount(f.montant)}</td>
@@ -1737,10 +1805,9 @@ async function exportURSSAFTrimestriel(q, y) {
     if (!path) return;
     const headers = ['N° Facture','Date','Patient','Prestation','Type prestation','Montant HT (€)','TVA (€)','Montant TTC (€)','Type séance'];
     const rows = facPeriod.map(f => {
-      const patient = state.patients.find(p=>p.id===f.patientId);
       const seance = state.seances.find(s=>s.id===f.seanceId);
       const m = factureMontants(f);
-      return [f.numero, f.date, patient?`${patient.prenom} ${patient.nom}`:'',
+      return [f.numero, f.date, facturePatientNom(f),
         f.prestation||'Consultation',
         f.typePrestation === 'analyse_pratique' ? 'Analyse de pratiques (TVA)' : 'Soin (exonéré)',
         String(m.ht).replace('.',','), String(m.tva).replace('.',','), String(m.ttc).replace('.',','),
@@ -2064,6 +2131,7 @@ async function importData() {
     const loaded = await loadAll(_db);
     state.patients = loaded.patients;
     state.factures = loaded.factures;
+    figerNomsPatientsFactures();
     state.seances = loaded.seances;
     state.charges = loaded.charges;
     state.nextFactureNum = loaded.nextFactureNum || 1;
@@ -2086,11 +2154,10 @@ async function exportCSV() {
     if (!path) return;
     const headers = ['N° Facture', 'Date', 'Patient', 'Prestation', 'Type prestation', 'Durée (min)', 'Montant HT (€)', 'TVA (€)', 'Montant TTC (€)', 'Statut'];
     const rows = state.factures.map(f => {
-      const patient = state.patients.find(p => p.id === f.patientId);
       const m = factureMontants(f);
       return [
         f.numero, f.date,
-        patient ? `${patient.prenom} ${patient.nom}` : '',
+        facturePatientNom(f),
         f.prestation,
         f.typePrestation === 'analyse_pratique' ? 'Analyse de pratiques (TVA)' : 'Soin (exonéré)',
         f.duree || '',
@@ -2386,12 +2453,14 @@ async function deleteCurrentPatient() {
   const p = state.patients.find(p => p.id === _currentPatientId);
   if (!p) return;
   const factures = state.factures.filter(f => f.patientId === p.id);
+  // Les factures sont conservées : obligation légale de conservation (10 ans), que le
+  // droit à l'effacement RGPD n'écarte pas (art. 17.3.b), et numérotation sans trou.
   const detail = factures.length
-    ? `et ses ${factures.length} facture(s) associée(s)`
+    ? ` Ses ${factures.length} facture(s) sont conservées (obligation légale de conservation), avec son nom tel qu'il y figure.`
     : '';
-  const msg = `Supprimer définitivement le dossier de ${p.prenom} ${p.nom} ${detail} ? ` +
-    `Cette action supprime aussi l'anamnèse, les documents générés (courriers, attestations, comptes-rendus) ` +
-    `et l'historique des questionnaires liés à ce patient. Elle est irréversible.`;
+  const msg = `Supprimer définitivement le dossier de ${p.prenom} ${p.nom} ? ` +
+    `Cette action supprime l'anamnèse, les notes, les séances, les documents générés (courriers, attestations, comptes-rendus) ` +
+    `et l'historique des questionnaires liés à ce patient. Elle est irréversible.${detail}`;
   const confirmed = await ask(msg, { title: 'Confirmer la suppression', kind: 'warning' });
   if (!confirmed) return;
 
@@ -2403,8 +2472,10 @@ async function deleteCurrentPatient() {
     return;
   }
 
+  for (const f of factures) {
+    if (!f.patientNom) f.patientNom = `${p.prenom} ${p.nom}`;
+  }
   state.patients = state.patients.filter(p => p.id !== _currentPatientId);
-  state.factures = state.factures.filter(f => f.patientId !== _currentPatientId);
   state.seances = state.seances.filter(s => s.patientId !== _currentPatientId);
   _currentPatientId = null;
   await saveState();
@@ -2469,7 +2540,7 @@ function renderPatients(filter = '') {
       <div class="patient-stats">
         <div><div class="patient-stat-label">Séances</div><div class="patient-stat-val">${factures.length}</div></div>
         <div><div class="patient-stat-label">CA total</div><div class="patient-stat-val">${formatAmount(ca)}</div></div>
-        <div><div class="patient-stat-label">Depuis</div><div class="patient-stat-val">${formatDate(p.dateCreation.split('T')[0])}</div></div>
+        <div><div class="patient-stat-label">Depuis</div><div class="patient-stat-val">${formatDate(jourLocal(p.dateCreation))}</div></div>
       </div>
       <div class="rgpd-badge"><i data-lucide="shield-check" style="width:13px;height:13px;"></i> RGPD consenti</div>
     </div>`;
@@ -3374,9 +3445,14 @@ function renderSearchResults(data, query) {
     html += `<div class="search-result-group">Factures</div>`;
     html += factures.map(f => {
       const patient = state.patients.find(pp => pp.id == f.patient_id);
-      return `<div class="search-result-item" onclick="openPatient('${f.patient_id}');switchPatientTab('infos');hideSearchResults();document.getElementById('global-search').value='';">
+      const nom = f.patient_nom || (patient ? `${patient.prenom} ${patient.nom}` : '');
+      // Dossier supprimé (la facture, elle, est conservée) : on ouvre la facture.
+      const action = patient
+        ? `openPatient('${escapeHtml(String(f.patient_id))}');switchPatientTab('infos');`
+        : `apercuFacture('${escapeHtml(String(f.id))}');`;
+      return `<div class="search-result-item" onclick="${action}hideSearchResults();document.getElementById('global-search').value='';">
         <div class="search-result-main">${highlight(f.numero, query)}</div>
-        <div class="search-result-sub">${patient ? escapeHtml(patient.prenom) + ' ' + escapeHtml(patient.nom) : '—'} · ${formatDate(f.date)} · ${formatAmount(f.montant)}</div>
+        <div class="search-result-sub">${escapeHtml(nom) || '—'} · ${formatDate(f.date)} · ${formatAmount(f.montant)}</div>
       </div>`;
     }).join('');
   }
