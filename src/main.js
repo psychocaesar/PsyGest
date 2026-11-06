@@ -18,6 +18,7 @@ const DEFAULT_SETTINGS = {
   tarifConsultation: 60,
   dureeConsultation: 50,
   calendlyUrl: '',
+  icsFiltre: 'doctolib, cal.com',
   objectifCA: 0,
   pwaUrl: '',
   pwaApiKey: '',
@@ -625,6 +626,7 @@ function toggleICSPanel() {
   if (isHidden && state.settings.calendlyUrl) {
     document.getElementById('calendly-url').value = state.settings.calendlyUrl;
   }
+  if (isHidden) document.getElementById('ics-filtre').value = state.settings.icsFiltre ?? '';
 }
 window.toggleICSPanel = toggleICSPanel;
 
@@ -908,13 +910,15 @@ function parseICS(text) {
 
   for (const rawLine of lines) {
     const line = rawLine.trim();
-    if (line === 'BEGIN:VEVENT') { inEvent = true; cur = {}; continue; }
+    if (line === 'BEGIN:VEVENT') { inEvent = true; cur = { raw: '' }; continue; }
     if (line === 'END:VEVENT') {
       if (inEvent && cur.date) events.push(cur);
       inEvent = false;
       continue;
     }
     if (!inEvent) continue;
+    // Toutes les lignes, paramètres compris (ex. ORGANIZER;CN=Cal.com:…), pour le filtre d'import.
+    cur.raw += line + '\n';
 
     const colonIdx = line.indexOf(':');
     if (colonIdx === -1) continue;
@@ -945,9 +949,49 @@ function parseICS(text) {
       }
     }
     if (key === 'SUMMARY') cur.note = value.replace(/\\n/g, ' ').replace(/\\,/g, ',');
+    if (key === 'DESCRIPTION') cur.description = value.replace(/\\n/gi, ' ').replace(/\\([,;\\])/g, '$1');
     if (key === 'UID') cur.uid = value;
   }
   return events;
+}
+
+// Mots-clés du filtre d'import (Réglages) : "doctolib, cal.com" → ['doctolib', 'cal.com'].
+// Filtre vide = tout importer.
+function icsMotsCles(filtre) {
+  return String(filtre || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+}
+
+function icsEvenementRetenu(ev, motsCles) {
+  if (!motsCles.length) return true;
+  const texte = (ev.raw || `${ev.note || ''} ${ev.description || ''}`).toLowerCase();
+  return motsCles.some(m => texte.includes(m));
+}
+
+// "Jean-Pierre DUPONT" → ['jean', 'pierre', 'dupont'] (sans accents ni ponctuation).
+function nomEnMots(s) {
+  return String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase()
+    .split(/[^a-z0-9]+/).filter(Boolean);
+}
+
+// Retrouve le dossier patient d'un rendez-vous importé : tous les mots du prénom et du
+// nom doivent figurer (dans n'importe quel ordre) dans le titre, sinon dans la
+// description. Le titre prime : une description cal.com contient aussi le nom du
+// praticien. Si plusieurs patients correspondent, on garde le nom le plus complet
+// ("Marie-Anne Martin" plutôt que "Marie Martin") ; une égalité (homonymes) ne
+// rattache rien — mieux vaut une séance à lier à la main qu'un mauvais dossier.
+function patientPourEvenement(ev, patients) {
+  for (const texte of [ev.note, ev.description]) {
+    const mots = new Set(nomEnMots(texte));
+    if (!mots.size) continue;
+    const trouves = patients
+      .map(p => ({ p, mots: [...nomEnMots(p.prenom), ...nomEnMots(p.nom)] }))
+      .filter(c => nomEnMots(c.p.prenom).length && nomEnMots(c.p.nom).length && c.mots.every(m => mots.has(m)));
+    if (!trouves.length) continue;
+    const max = Math.max(...trouves.map(c => c.mots.length));
+    const meilleurs = trouves.filter(c => c.mots.length === max);
+    return meilleurs.length === 1 ? meilleurs[0].p.id : null;
+  }
+  return null;
 }
 
 async function importICSFile() {
@@ -956,6 +1000,11 @@ async function importICSFile() {
       filters: [{ name: 'Calendrier iCal', extensions: ['ics', 'ifb'] }],
     });
     if (!path) return;
+    const filtreInput = document.getElementById('ics-filtre');
+    if (filtreInput && filtreInput.value.trim() !== (state.settings.icsFiltre || '')) {
+      state.settings.icsFiltre = filtreInput.value.trim();
+      await saveState();
+    }
     const content = await readTextFile(path);
     const events = parseICS(content);
     await importICSEvents(events);
@@ -971,8 +1020,10 @@ async function importICSUrl() {
   const url = urlInput?.value?.trim();
   if (!url) { toast('Entrez une URL iCal.', 'error'); return; }
 
-  // Sauvegarder l'URL dans les réglages
+  // Sauvegarder l'URL et le filtre dans les réglages
   state.settings.calendlyUrl = url;
+  const filtreInput = document.getElementById('ics-filtre');
+  if (filtreInput) state.settings.icsFiltre = filtreInput.value.trim();
   await saveState();
 
   toast('Téléchargement du calendrier…', 'info');
@@ -1021,19 +1072,36 @@ async function importICSEvents(events, { silent = false } = {}) {
     return;
   }
 
+  const motsCles = icsMotsCles(state.settings.icsFiltre);
+  const retenus = events.filter(ev => icsEvenementRetenu(ev, motsCles));
+  const ignores = events.length - retenus.length;
+
   // Déduplications sur uid ou date+heure
-  const existingUids = new Set(state.seances.map(s => s.uid).filter(Boolean));
-  const existingSlots = new Set(state.seances.map(s => s.date + 'T' + (s.heure || '')));
+  const byUid = new Map(state.seances.filter(s => s.uid).map(s => [s.uid, s]));
+  const bySlot = new Map(state.seances.map(s => [s.date + 'T' + (s.heure || ''), s]));
 
-  let added = 0;
-  for (const ev of events) {
+  // Date.now() ne change pas d'une itération à l'autre : sans suffixe, toutes les
+  // séances d'un même import partageaient le même id. Suffixe numérique (pas de
+  // tiret) car certains onclick passent l'id sans guillemets.
+  const base = Date.now();
+  let added = 0, linked = 0, unlinked = 0;
+  for (const ev of retenus) {
     const slot = ev.date + 'T' + (ev.heure || '');
-    if (ev.uid && existingUids.has(ev.uid)) continue;
-    if (!ev.uid && existingSlots.has(slot)) continue;
+    const existante = ev.uid ? byUid.get(ev.uid) : bySlot.get(slot);
+    if (existante) {
+      // Rendez-vous déjà importé mais pas encore rattaché (ex. dossier patient créé
+      // depuis) : on retente, sans jamais écraser un rattachement existant.
+      if (!existante.patientId) {
+        const pid = patientPourEvenement(ev, state.patients);
+        if (pid) { existante.patientId = pid; linked++; }
+      }
+      continue;
+    }
 
+    const patientId = patientPourEvenement(ev, state.patients);
     const seance = {
-      id: String(Date.now()),
-      patientId: null,
+      id: String(base) + String(added).padStart(3, '0'),
+      patientId,
       date: ev.date,
       heure: ev.heure || '00:00',
       duree: ev.duree || state.settings.dureeConsultation || 50,
@@ -1043,19 +1111,30 @@ async function importICSEvents(events, { silent = false } = {}) {
       uid: ev.uid || null,
     };
     state.seances.push(seance);
-    existingUids.add(ev.uid);
-    existingSlots.add(slot);
+    if (ev.uid) byUid.set(ev.uid, seance);
+    bySlot.set(slot, seance);
     added++;
+    if (patientId) linked++; else unlinked++;
   }
 
-  if (added === 0) {
-    if (!silent) toast('Aucune nouvelle séance (tous les événements existent déjà).');
+  const filtreInfo = ignores ? ` ${ignores} événement(s) ignoré(s) par le filtre d'import.` : '';
+  if (added === 0 && linked === 0) {
+    if (!silent) {
+      toast(retenus.length
+        ? `Aucune nouvelle séance (tous les rendez-vous existent déjà).${filtreInfo}`
+        : `Aucun rendez-vous retenu : les ${events.length} événement(s) ont été ignorés par le filtre d'import (« ${state.settings.icsFiltre} »).`,
+        retenus.length ? 'info' : 'error');
+    }
     return;
   }
 
   await saveState();
   renderAgenda();
-  toast(`${added} séance(s) importée(s) ✓ — liez les patients depuis la liste.`);
+  const parts = [];
+  if (added) parts.push(`${added} séance(s) importée(s)`);
+  if (linked) parts.push(`${linked} rattachée(s) à un dossier patient`);
+  if (unlinked) parts.push(`${unlinked} à lier à la main`);
+  toast(`${parts.join(', ')} ✓${silent ? '' : filtreInfo}`);
 }
 
 // ===== CHARGES =====

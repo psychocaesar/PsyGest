@@ -273,6 +273,11 @@
           <button class="btn btn-secondary btn-sm" onclick="importICSFile()"><i data-lucide="upload"></i> Fichier .ics</button>
         </div>
       </div>
+      <div class="form-group" style="margin-top:var(--space-3);">
+        <label for="ics-filtre">N'importer que les rendez-vous contenant</label>
+        <input class="form-input" id="ics-filtre" placeholder="doctolib, cal.com">
+        <div class="form-hint">Mots séparés par des virgules, cherchés dans tout l'événement (titre, description, organisateur, lien). Évite d'importer les événements personnels d'un calendrier partagé. Laissez vide pour tout importer. Si des rendez-vous attendus n'apparaissent pas, ouvrez-en un dans le calendrier pour voir quel mot les identifie. Les rendez-vous sont rattachés automatiquement au dossier patient dont le prénom et le nom figurent dans le titre.</div>
+      </div>
     </div>
 
     <!-- Vue liste -->
