@@ -219,6 +219,11 @@ function factureMontants(f) {
   return { ht: ttc, tva: 0, ttc, tauxTva: 0 };
 }
 
+// Recette comptée dans le CA : une facture payée. Une facture annulée par un avoir en
+// sort (statut « annulee ») ; l'avoir doit en sortir aussi, sinon son montant négatif
+// retrancherait la facture une seconde fois (CA de −60 € au lieu de 0 € après un avoir).
+function estRecette(f) { return f.statut === 'payee' && f.type !== 'avoir'; }
+
 // Nom du patient tel qu'imprimé sur la facture à son émission (copié dessus), à défaut
 // le dossier actuel. Une facture émise ne doit pas changer si le dossier est renommé,
 // et doit rester lisible s'il est supprimé (conservation obligatoire des factures).
@@ -302,6 +307,10 @@ function updateFactureTvaHint() {
 }
 window.updateFactureTvaHint = updateFactureTvaHint;
 
+// Le numéro est consommé avant l'enregistrement et la fenêtre ne se ferme qu'après : sans
+// ce verrou, un double-clic émettrait deux factures, que seul un avoir pourrait annuler.
+let _factureEnCours = false;
+
 async function saveFacture() {
   const patientId = document.getElementById('f-patient').value;
   const date = document.getElementById('f-date').value;
@@ -310,6 +319,8 @@ async function saveFacture() {
     toast('Veuillez remplir tous les champs requis.', 'error');
     return;
   }
+  if (_factureEnCours) return;
+  _factureEnCours = true;
   const facture = {
     id: String(Date.now()),
     numero: formatNum(state.nextFactureNum),
@@ -325,7 +336,7 @@ async function saveFacture() {
   };
   state.factures.push(facture);
   state.nextFactureNum++;
-  await saveState();
+  try { await saveState(); } finally { _factureEnCours = false; }
   closeModal('modalNewFacture');
   ['f-montant', 'f-notes'].forEach(id => { document.getElementById(id).value = ''; });
   document.getElementById('f-patient').value = '';
@@ -509,7 +520,9 @@ window.openAvoirModal = openAvoirModal;
 
 async function saveAvoir() {
   const f = state.factures.find(f => String(f.id) === String(_avoirFactureId));
-  if (!f) { closeModal('modalAvoir'); return; }
+  // Revérifié ici, pas seulement à l'ouverture : la fenêtre ne se ferme qu'après
+  // l'enregistrement, un double-clic émettrait sinon deux avoirs pour la même facture.
+  if (!f || f.type === 'avoir' || f.statut === 'annulee') { closeModal('modalAvoir'); return; }
   const motif = document.getElementById('av-motif').value.trim();
   if (!motif) { toast('Le motif est requis.', 'error'); return; }
 
@@ -1107,6 +1120,11 @@ async function importICSEvents(events, { silent = false, depuisFlux = false } = 
   const retenus = events.filter(ev => icsEvenementRetenu(ev, motsCles));
   const ignores = events.length - retenus.length;
 
+  // Le flux concerne-t-il le même calendrier ? Évalué AVANT d'importer quoi que ce soit :
+  // après, les rendez-vous d'un autre calendrier (URL changée) y figureraient toujours.
+  const uidsFlux = new Set(events.map(e => e.uid).filter(Boolean));
+  const memeCalendrier = state.seances.some(s => s.uid && uidsFlux.has(s.uid));
+
   // Déduplications sur uid ou date+heure
   const byUid = new Map(state.seances.filter(s => s.uid).map(s => [s.uid, s]));
   const bySlot = new Map(state.seances.map(s => [s.date + 'T' + (s.heure || ''), s]));
@@ -1171,16 +1189,12 @@ async function importICSEvents(events, { silent = false, depuisFlux = false } = 
   // n'en être qu'un extrait. Comparé à tous les événements, filtre compris, pour
   // qu'un mot-clé retiré du filtre n'annule rien. Si aucune séance connue n'est dans
   // le flux (URL changée pour un autre calendrier), on ne touche à rien.
-  if (depuisFlux) {
-    const uidsFlux = new Set(events.map(e => e.uid).filter(Boolean));
-    const connues = state.seances.some(s => s.uid && uidsFlux.has(s.uid));
+  if (depuisFlux && memeCalendrier) {
     const auj = today();
-    if (connues) {
-      for (const s of state.seances) {
-        if (s.uid && !uidsFlux.has(s.uid) && s.date >= auj && seanceSuitLeCalendrier(s)) {
-          s.statut = 'annule';
-          annules++;
-        }
+    for (const s of state.seances) {
+      if (s.uid && !uidsFlux.has(s.uid) && s.date >= auj && seanceSuitLeCalendrier(s)) {
+        s.statut = 'annule';
+        annules++;
       }
     }
   }
@@ -1236,7 +1250,7 @@ window.deleteCharge = deleteCharge;
 const catLabels = { loyer: 'Loyer', materiel: 'Matériel', formation: 'Formation', assurance: 'Assurance', logiciel: 'Logiciel', autre: 'Autre' };
 
 function refreshCharges() {
-  const ca = state.factures.filter(f => f.statut === 'payee').reduce((s, f) => s + factureMontants(f).ht, 0);
+  const ca = state.factures.filter(estRecette).reduce((s, f) => s + factureMontants(f).ht, 0);
   const totalCharges = state.charges.reduce((s, c) => s + Number(c.montant), 0);
   const beneficeAvantCotisations = ca - totalCharges;
   const urssaf = Math.max(0, beneficeAvantCotisations) * urssafRate();
@@ -1265,14 +1279,14 @@ function refreshDashboard() {
     const d = new Date(f.date);
     return d.getMonth() === thisMonth && d.getFullYear() === thisYear;
   });
-  const caMonth = facturesMonth.filter(f => f.statut === 'payee').reduce((s, f) => s + factureMontants(f).ht, 0);
+  const caMonth = facturesMonth.filter(estRecette).reduce((s, f) => s + factureMontants(f).ht, 0);
   const impayees = state.factures.filter(f => f.statut === 'en_attente');
-  const caTotal = state.factures.filter(f => f.statut === 'payee').reduce((s, f) => s + factureMontants(f).ht, 0);
+  const caTotal = state.factures.filter(estRecette).reduce((s, f) => s + factureMontants(f).ht, 0);
   const totalChargesAll = state.charges.reduce((s, c) => s + Number(c.montant), 0);
   const urssaf = Math.max(0, caTotal - totalChargesAll) * urssafRate();
 
   document.getElementById('kpi-ca').textContent = formatAmount(caMonth);
-  document.getElementById('kpi-seances').textContent = facturesMonth.length;
+  document.getElementById('kpi-seances').textContent = facturesMonth.filter(f => f.type !== 'avoir' && f.statut !== 'annulee').length;
   document.getElementById('kpi-patients').textContent = state.patients.length;
   document.getElementById('kpi-impayees').textContent = impayees.length;
   document.getElementById('kpi-impayees-sub').textContent = impayees.length
@@ -1530,7 +1544,7 @@ function renderStatsOverview(from, to) {
   const taux = urssafRate();
   const facPeriod = state.factures.filter(f => inRange(f.date, from, to));
   const seancesPeriod = state.seances.filter(s => inRange(s.date, from, to));
-  const payees = facPeriod.filter(f => f.statut === 'payee');
+  const payees = facPeriod.filter(estRecette);
   const ca = payees.reduce((s,f)=>s+factureMontants(f).ht,0);
   const chargesPeriod = state.charges.filter(c=>inRange(c.date,from,to));
   const totalCharges = chargesPeriod.reduce((s,c)=>s+Number(c.montant),0);
@@ -1548,7 +1562,7 @@ function renderStatsOverview(from, to) {
   const months = last12Months();
   const caByMonth = months.map(m => ({
     l: m.l,
-    v: Math.round(state.factures.filter(f=>f.statut==='payee'&&inRange(f.date,m.from,m.to)).reduce((s,f)=>s+factureMontants(f).ht,0)),
+    v: Math.round(state.factures.filter(f=>estRecette(f)&&inRange(f.date,m.from,m.to)).reduce((s,f)=>s+factureMontants(f).ht,0)),
   }));
   const seancesByMonth = months.map(m => ({
     l: m.l,
@@ -1649,7 +1663,7 @@ function renderStatsFinancier(from, to) {
   if (!el) return;
   const taux = urssafRate();
   const facPeriod = state.factures.filter(f=>inRange(f.date,from,to));
-  const payees = facPeriod.filter(f=>f.statut==='payee');
+  const payees = facPeriod.filter(estRecette);
   const ca = payees.reduce((s,f)=>s+factureMontants(f).ht,0);
   const chargesPeriod = state.charges.filter(c=>inRange(c.date,from,to));
   const totalCharges = chargesPeriod.reduce((s,c)=>s+Number(c.montant),0);
@@ -1658,7 +1672,7 @@ function renderStatsFinancier(from, to) {
   const impayeesAll = state.factures.filter(f=>f.statut==='en_attente');
   const montantImpayees = impayeesAll.reduce((s,f)=>s+Number(f.montant),0);
 
-  const paiementsAvecDate = state.factures.filter(f=>f.statut==='payee'&&f.dateCreation);
+  const paiementsAvecDate = state.factures.filter(f=>estRecette(f)&&f.dateCreation);
   const delaiMoy = paiementsAvecDate.length
     ? Math.round(paiementsAvecDate.reduce((s,f)=>{
         const diff=(new Date(f.date+'T12:00')-new Date(jourLocal(f.dateCreation)+'T12:00'))/(1000*60*60*24);
@@ -1668,7 +1682,7 @@ function renderStatsFinancier(from, to) {
 
   const months = last12Months();
   const stackData = months.map(m => {
-    const mCA = state.factures.filter(f=>f.statut==='payee'&&inRange(f.date,m.from,m.to)).reduce((s,f)=>s+factureMontants(f).ht,0);
+    const mCA = state.factures.filter(f=>estRecette(f)&&inRange(f.date,m.from,m.to)).reduce((s,f)=>s+factureMontants(f).ht,0);
     const mCharges = state.charges.filter(c=>inRange(c.date,m.from,m.to)).reduce((s,c)=>s+Number(c.montant),0);
     return { l:m.l, ca:mCA, charges:mCharges, urssaf:Math.max(0, mCA-mCharges)*taux };
   });
@@ -1754,7 +1768,7 @@ function renderUrssafTrimestriel() {
   const to = `${y}-${String(endMonth).padStart(2,'0')}-${String(lastDay).padStart(2,'0')}`;
   const taux = urssafRate();
 
-  const facPeriod = state.factures.filter(f=>f.statut==='payee'&&inRange(f.date,from,to));
+  const facPeriod = state.factures.filter(f=>estRecette(f)&&inRange(f.date,from,to));
   const caIndiv = facPeriod.filter(f=>{
     const s = state.seances.find(ss=>ss.id===f.seanceId);
     return !s || s.type==='individuel' || s.type==='famille';
@@ -1794,7 +1808,7 @@ async function exportURSSAFTrimestriel(q, y) {
   const endMonth = q*3;
   const lastDay = new Date(y,endMonth,0).getDate();
   const to = `${y}-${String(endMonth).padStart(2,'0')}-${String(lastDay).padStart(2,'0')}`;
-  const facPeriod = state.factures.filter(f=>f.statut==='payee'&&inRange(f.date,from,to));
+  const facPeriod = state.factures.filter(f=>estRecette(f)&&inRange(f.date,from,to));
   const taux = urssafRate();
 
   try {
@@ -1911,7 +1925,7 @@ async function export2035() {
   });
 
   const rows = months.map(m => {
-    const mFac = state.factures.filter(f=>f.statut==='payee'&&inRange(f.date,m.from,m.to));
+    const mFac = state.factures.filter(f=>estRecette(f)&&inRange(f.date,m.from,m.to));
     const mSea = state.seances.filter(s=>inRange(s.date,m.from,m.to)&&s.statut==='present');
     const caIndiv = mFac.filter(f=>{const ss=state.seances.find(s2=>s2.id===f.seanceId);return !ss||ss.type!=='entreprise';}).reduce((a,f)=>a+factureMontants(f).ht,0);
     const caEnt   = mFac.filter(f=>{const ss=state.seances.find(s2=>s2.id===f.seanceId);return ss&&ss.type==='entreprise';}).reduce((a,f)=>a+factureMontants(f).ht,0);
@@ -1921,7 +1935,7 @@ async function export2035() {
 
   const totalAnnuel = rows.reduce((a,r)=>({seances:a.seances+r.seances,caIndiv:a.caIndiv+r.caIndiv,caEnt:a.caEnt+r.caEnt,total:a.total+r.total}),{seances:0,caIndiv:0,caEnt:0,total:0});
   const tvaCollecteeAnn = state.factures
-    .filter(f=>f.statut==='payee'&&f.typePrestation==='analyse_pratique'&&f.date.startsWith(y+''))
+    .filter(f=>estRecette(f)&&f.typePrestation==='analyse_pratique'&&f.date.startsWith(y+''))
     .reduce((s,f)=>s+factureMontants(f).tva,0);
 
   const catLabels = { loyer:'Loyer',materiel:'Matériel',formation:'Formation',assurance:'Assurance',logiciel:'Logiciel',autre:'Autre' };
@@ -2376,7 +2390,7 @@ function renderPatientInfos(id) {
   if (!p) return;
   const factures = state.factures.filter(f => f.patientId === id)
     .sort((a, b) => b.date.localeCompare(a.date));
-  const caTotal = factures.filter(f => f.statut === 'payee').reduce((s, f) => s + factureMontants(f).ht, 0);
+  const caTotal = factures.filter(estRecette).reduce((s, f) => s + factureMontants(f).ht, 0);
 
   const hasEmail = !!(p && p.email);
   const facturesHTML = factures.length ? factures.map(f => {
@@ -2520,7 +2534,7 @@ function renderPatients(filter = '') {
   const now_ = Date.now();
   grid.innerHTML = patients.map(p => {
     const factures = state.factures.filter(f => f.patientId === p.id);
-    const ca = factures.reduce((s, f) => s + (f.statut === 'payee' ? factureMontants(f).ht : 0), 0);
+    const ca = factures.reduce((s, f) => s + (estRecette(f) ? factureMontants(f).ht : 0), 0);
     const patSeances = state.seances.filter(s => s.patientId === p.id);
     const lastSeanceDate = patSeances.map(s => s.date).sort().reverse()[0] || null;
     const daysSinceSeance = lastSeanceDate ? Math.floor((now_ - new Date(lastSeanceDate + 'T12:00:00').getTime()) / 86400000) : 999;
